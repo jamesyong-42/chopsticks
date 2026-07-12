@@ -10,7 +10,7 @@ describe('createEnvelopeStamper', () => {
       monotonicTime: 0,
       source: 'native-hook' as const,
       confidence: 'authoritative' as const,
-      event: { type: 'session.started' },
+      event: { type: 'session.started' as const },
     };
     const a = stamper.next(base);
     const b = stamper.next(base);
@@ -27,7 +27,7 @@ describe('createEnvelopeStamper', () => {
       monotonicTime: 0,
       source: 'runtime' as const,
       confidence: 'derived' as const,
-      event: {},
+      event: { type: 'session.ready' as const },
     };
     s1.next(base);
     expect(s2.next(base).sequence).toBe(1);

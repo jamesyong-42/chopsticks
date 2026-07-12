@@ -18,5 +18,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "devDependencies": {
+    "fast-check": "^4.0.0"
   }
 }
