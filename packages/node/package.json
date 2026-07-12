@@ -1,8 +1,8 @@
 {
-  "name": "@vibecook/chopsticks-testing",
+  "name": "@vibecook/chopsticks-node",
   "version": "0.0.0",
   "type": "module",
-  "description": "Test harness for the chopsticks runtime: fake terminal agent, captured hook fixtures, synthetic hook payloads.",
+  "description": "Node runtime for chopsticks: PTY transport, process-tree control, ordered terminal distribution with sink policies.",
   "license": "MIT",
   "author": "James Yong",
   "main": "./src/index.ts",
@@ -20,10 +20,19 @@
       }
     }
   },
-  "files": ["dist", "bin", "fixtures"],
+  "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@vibecook/chopsticks-core": "workspace:*",
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/headless": "^5.5.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@vibecook/chopsticks-testing": "workspace:*"
   }
 }
