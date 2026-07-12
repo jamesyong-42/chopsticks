@@ -1,0 +1,22 @@
+{
+  "name": "@vibecook/chopsticks-core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Core contracts for the chopsticks agent runtime: events, session state reducer, adapter interfaces. Zero I/O.",
+  "license": "MIT",
+  "author": "James Yong",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}
