@@ -6,6 +6,7 @@
 
 export * from './distributor.js';
 export * from './ring-buffer.js';
+export * from './headless-sink.js';
 export * from './pty.js';
 export * from './env.js';
 export * from './process-tree.js';
