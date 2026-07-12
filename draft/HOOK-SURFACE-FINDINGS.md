@@ -17,7 +17,7 @@
 | `UserPromptSubmit` carries `prompt_id` + `prompt` (§17.2 confirmation match) | **YES**, both |
 | `PreToolUse`/`PostToolUse` carry `tool_use_id` (§14.4) | **YES**, plus `tool_response` and `duration_ms` on Post |
 | Unknown event names in settings | **Silently tolerated** — no validation error, no capture. Registry may include speculative names safely |
-| `PermissionRequest` fires headless when a tool is denied | **NO** — print-mode denial fires `PreToolUse` only, then nothing. Interactive PTY probe required (M1) |
+| `PermissionRequest` fires headless when a tool is denied | **NO** — print-mode denial fires `PreToolUse` only, then nothing. Captured interactively instead (M1 done — see §3.1); it fires when the dialog is *shown*, before approve/deny |
 
 **Go/no-go on HTTP hooks: GO.** Hybrid bridge per DESIGN §16.4 stands; the command-forwarder is fallback only.
 
@@ -50,11 +50,25 @@ Post-prompt events additionally carry `prompt_id` (uuid), and most carry `permis
 | `PostToolUse` | ✓ | ditto + `tool_response` (full result object), `duration_ms` |
 | `MessageDisplay` | ✓ | **streaming**: `delta`, `index`, `final`, `turn_id`, `message_id` — not the single-`text` shape DESIGN §16.7 sketched |
 | `Stop` | ✓ | `last_assistant_message`, `stop_hook_active`, `background_tasks[]`, `session_crons[]` |
-| `PermissionRequest` | ✗ headless | exists in spaghetti's union; needs interactive probe |
-| `PostToolUseFailure` | ✗ headless | exists — observed live in the authoring session's own hook stream |
-| `Notification`, `Subagent*`, `Task*`, others | not exercised | need targeted interactive probes |
+| `PermissionRequest` | ✓ interactive (M1) | envelope + `prompt_id`, `permission_mode`, `effort`, `tool_name`, `tool_input`, `permission_suggestions[]`. **No `tool_use_id`** (see §3.1) |
+| `PostToolUseFailure` | ✓ interactive (M1) | envelope + `tool_name`, `tool_input`, `tool_use_id`, `duration_ms`, `error` (string), `is_interrupt` (bool). Fires when an **approved** tool executes and fails (exit≠0) |
+| `Notification` | ✓ interactive (M1) | `message`, `notification_type` (`"permission_prompt"` observed). Envelope + `prompt_id`; no `permission_mode`/`effort` |
+| `SubagentStart` | ✓ interactive (M1) | envelope + `prompt_id`, `agent_id` (17-hex, **not** a uuid), `agent_type` (`"general-purpose"`) |
+| `SubagentStop` | ✓ interactive (M1) | envelope + `agent_id`, `agent_type`, `agent_transcript_path` (subagent's own JSONL), `last_assistant_message`, `stop_hook_active`, `background_tasks[]`, `session_crons[]`. **Fires repeatedly** — 1× `stop_hook_active:false` then N× `true` |
+| `TaskCreated`, `TaskCompleted` | ✗ | did **not** fire when the Task tool spawned a subagent (that path fires `Subagent*`). Distinct task system; needs a different trigger |
+| `Task*`, `PreCompact/PostCompact`, others | not exercised | need targeted triggers |
 
-Raw captures: `probe/captures/*.jsonl` (multiple sessions appended; discriminate by `session_id`). These seed `packages/testing/src/fixtures/hooks/` in M0-4.
+Raw headless captures: `probe/captures/*.jsonl`. Raw interactive captures: `probe/captures-interactive/*.jsonl` (M1; multiple sessions appended, discriminate by `session_id`). Representative single lines seed `packages/testing/fixtures/hooks/` (13 events now: the 8 headless + `PermissionRequest`, `Notification`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`).
+
+### 3.1 Interactive census (M1)
+
+**Method:** `packages/node/scripts/interactive-census.mjs` drives a real Claude Code TUI through a `node-pty` PTY (settings = `probe/interactive-settings.json`, captures → `probe/captures-interactive/`). Two authorized sessions: (run 1) force a Bash permission dialog and **deny** it; (run 2) run an approved-but-failing Bash and spawn one subagent via the Task tool. Every wait is bounded; the driver group-kills on timeout and verifies no `claude` process survives.
+
+**PermissionRequest correlation (priority finding):** the payload has **no `tool_use_id`** and no dedicated request-id. The permission gate fires *before* the tool call is assigned an id, so the bridge must correlate a PermissionRequest to its later `PreToolUse`/`PostToolUse` by **`prompt_id` + `tool_name` + `tool_input`** (a PreToolUse for the same call carries `tool_use_id`). `permission_suggestions[]` is the dialog's "always allow" options (`addRules` / `addDirectories` / `setMode`, each with a `destination` such as `session` / `localSettings`).
+
+**Denial signal:** a denied tool fires `PreToolUse` with **no matching `PostToolUse` and no `PostToolUseFailure`** — the same "Pre without Post" absence pattern seen headless (§4.4). Only an *approved* tool that then errors yields `PostToolUseFailure`.
+
+**`Notification`** fired once when the permission dialog appeared (`notification_type: "permission_prompt"`).
 
 ---
 
@@ -66,14 +80,17 @@ Raw captures: `probe/captures/*.jsonl` (multiple sessions appended; discriminate
    - `turn.started` uses `prompt_id`; keep `turn_id` as a secondary correlation field.
    - `session.ready` proxy: `SessionStart` arrives at process start; `InstructionsLoaded` (`load_reason: "session_start"`) is a useful "boot finished" refinement.
 3. **Prompt confirmation (§17.2):** `UserPromptSubmit.prompt` is verbatim — exact-match against injected text is viable (normalize trailing newline only).
-4. **Permission observation:** headless denial is invisible beyond `PreToolUse` with no matching Post — the *absence* pattern (Pre without Post/Failure within timeout) is itself a usable "possibly blocked" signal. Real `PermissionRequest` payload capture is an M1 task once a PTY exists: run the census settings under the workbench terminal and click through a permission dialog.
+4. **Permission observation:** denial (headless AND interactive) is invisible beyond `PreToolUse` with no matching Post — the *absence* pattern (Pre without Post/Failure within timeout) is the "denied or stuck" signal. `PermissionRequest` itself fires at dialog-show time with no `tool_use_id` (§3.1) — the normalizer must synthesize a request id (e.g. from `prompt_id` + `tool_name` + input hash) since core's `PermissionRequestedEvent.requestId` is required.
 5. **Envelope:** every event self-identifies session + transcript path — the bridge needs zero session inference; reject requests whose `session_id` isn't ours (DESIGN §16.6 rule) is trivially implementable.
 
 ---
 
 ## 5. Open items carried to M1/M2
 
-- [ ] Interactive census: `PermissionRequest`, `PostToolUseFailure`, `Notification`, `SubagentStart/Stop`, `TaskCreated/Completed`, `PreCompact/PostCompact` payloads (run census settings inside the workbench PTY, M1 exit test doubles as this probe).
+- [x] Interactive census (M1) via `packages/node/scripts/interactive-census.mjs` (node-pty PTY): captured `PermissionRequest`, `Notification`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop` — see §3.1, fixtures added.
+- [ ] `TaskCreated` / `TaskCompleted`: **not** fired by the Task-tool subagent path (that fires `Subagent*`). Find the trigger — likely the FleetView task/todo system, not the subagent tool.
+- [ ] `PreCompact` / `PostCompact`: not yet exercised (needs a long/compacting session or a manual `/compact`).
+- [ ] `Elicitation` / `ElicitationResult`, `TeammateIdle`, `StopFailure`: not yet exercised.
 - [ ] Per-event HTTP support matrix (M2-2).
 - [ ] `SessionEnd.reason` value set (only `"other"` observed).
 - [ ] Whether MessageDisplay fires for thinking/tool-progress displays or only assistant text.

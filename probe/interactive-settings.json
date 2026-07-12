@@ -1,0 +1,254 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SessionStart.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SessionStart.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SessionEnd.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SessionEnd.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/UserPromptSubmit.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/UserPromptSubmit.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PreToolUse.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PreToolUse.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PermissionRequest.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PermissionRequest.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostToolUse.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostToolUse.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostToolUseFailure.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostToolUseFailure.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Notification.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Notification.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SubagentStart.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SubagentStart.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SubagentStop.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/SubagentStop.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TaskCreated.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TaskCreated.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TaskCompleted.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TaskCompleted.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Stop.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Stop.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/StopFailure.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/StopFailure.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TeammateIdle.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/TeammateIdle.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/InstructionsLoaded.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/InstructionsLoaded.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/ConfigChange.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/ConfigChange.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/CwdChanged.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/CwdChanged.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/FileChanged.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/FileChanged.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PreCompact.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PreCompact.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostCompact.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/PostCompact.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/WorktreeCreate.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/WorktreeCreate.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/WorktreeRemove.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/WorktreeRemove.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Elicitation.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/Elicitation.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/ElicitationResult.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures-interactive/ElicitationResult.jsonl\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

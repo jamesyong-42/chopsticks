@@ -53,6 +53,59 @@ describe('captured hook fixtures (Phase 0)', () => {
   });
 });
 
+// Interactive-only events (M1): captured by driving a real TUI via node-pty
+// (packages/node/scripts/interactive-census.mjs); these never fire in headless
+// `-p` mode. Shapes documented in draft/HOOK-SURFACE-FINDINGS.md §3.
+describe('interactive-only hook fixtures (M1)', () => {
+  it('PermissionRequest carries the pending tool but NO tool_use_id (correlate via prompt_id)', () => {
+    const records = loadHookFixtures('PermissionRequest');
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(record.prompt_id).toMatch(UUID_RE);
+      expect(typeof record.tool_name).toBe('string');
+      expect(typeof record.tool_input).toBe('object');
+      // The permission gate fires before a tool_use_id is assigned: correlation
+      // to PreToolUse is by (prompt_id + tool_name + tool_input), not tool id.
+      expect(record.tool_use_id).toBeUndefined();
+      expect(Array.isArray(record.permission_suggestions)).toBe(true);
+    }
+  });
+
+  it('Notification identifies the reason it interrupted', () => {
+    const records = loadHookFixtures('Notification');
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(typeof record.notification_type).toBe('string');
+      expect(typeof record.message).toBe('string');
+    }
+  });
+
+  it('PostToolUseFailure carries tool_use_id + an error string (approved tool that failed)', () => {
+    const records = loadHookFixtures('PostToolUseFailure');
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(record.tool_use_id).toMatch(/^toolu_/);
+      expect(typeof record.tool_name).toBe('string');
+      expect(typeof record.error).toBe('string');
+      expect(typeof record.is_interrupt).toBe('boolean');
+    }
+  });
+
+  it('SubagentStart/Stop carry agent_id + agent_type; Stop adds the agent transcript path', () => {
+    for (const record of loadHookFixtures('SubagentStart')) {
+      expect(typeof record.agent_id).toBe('string');
+      expect((record.agent_id as string).length).toBeGreaterThan(0);
+      expect(typeof record.agent_type).toBe('string');
+    }
+    for (const record of loadHookFixtures('SubagentStop')) {
+      expect(typeof record.agent_id).toBe('string');
+      expect(typeof record.agent_type).toBe('string');
+      expect(record.agent_transcript_path).toContain(record.agent_id as string);
+      expect(record.last_assistant_message).toBeDefined();
+    }
+  });
+});
+
 describe('fakeClaudeHookPayload', () => {
   it('builds the common envelope and applies overrides', () => {
     const payload = fakeClaudeHookPayload('PermissionRequest', { tool_name: 'Bash', session_id: 'abc' });
