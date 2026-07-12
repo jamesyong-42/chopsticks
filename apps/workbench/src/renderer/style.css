@@ -1,0 +1,122 @@
+:root {
+  --bg: #1e1e2e;
+  --bg-elevated: #181825;
+  --border: #313244;
+  --text: #cdd6f4;
+  --text-dim: #9399b2;
+  --accent: #89b4fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#tabbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(137, 180, 250, 0.08);
+}
+
+.tab.exited {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.tab .close {
+  color: var(--text-dim);
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.tab .close:hover {
+  color: var(--text);
+}
+
+#actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#actions button:hover {
+  border-color: var(--accent);
+}
+
+#terminals {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.term-pane {
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+  display: none;
+}
+
+.term-pane.active {
+  display: block;
+}
+
+.xterm {
+  height: 100%;
+}
