@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Bundle the workbench: ESM main (Electron ≥28 ESM entry), CJS sandboxed
-// preload, and a browser renderer with its CSS sidecar. The pty-host is NOT
-// bundled — it runs from src/ under tsx so it can import workspace TS directly.
+// Bundle the workbench: CommonJS main (the Electron main entry; the ESM-only
+// avocado SDK is inlined into it), CJS sandboxed preload, and a browser renderer
+// with its CSS sidecar. The pty-host is NOT bundled — it runs from src/ under
+// tsx so it can import workspace TS (and the avocado SDK's ESM) directly.
 
 import { build } from 'esbuild';
 import { cp, mkdir, writeFile } from 'node:fs/promises';
