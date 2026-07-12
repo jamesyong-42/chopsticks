@@ -42,8 +42,6 @@ class TerminalTab {
   readonly pane: HTMLDivElement;
   readonly button: HTMLButtonElement;
   private readonly label: HTMLSpanElement;
-  /** Highest sequence written; guards against replay/live overlap on reload. */
-  lastSequence = 0;
   /** False until history has been restored, so live chunks buffer first. */
   ready = false;
   exited = false;
@@ -167,9 +165,7 @@ class Workbench {
   }
 
   private applyChunk(tab: TerminalTab, chunk: ChunkEvent): void {
-    if (chunk.sequence <= tab.lastSequence) return;
     tab.write(b64ToBytes(chunk.dataBase64));
-    tab.lastSequence = chunk.sequence;
   }
 
   private onChunks(chunks: ChunkEvent[]): void {
@@ -221,9 +217,10 @@ class Workbench {
 
   private async restoreOne(descriptor: SessionDescriptor): Promise<void> {
     const tab = this.makeTab(descriptor.sessionId, basename(descriptor.command));
-    const replay = await chopsticks.replay(descriptor.sessionId, 0);
-    for (const chunk of replay.chunks)
-      this.applyChunk(tab, { event: 'chunk', sessionId: descriptor.sessionId, ...chunk });
+    // The hub proxy's full output buffer, written as one snapshot; live chunks
+    // that raced this await are drained by flushPending right after.
+    const { snapshotBase64 } = await chopsticks.replay(descriptor.sessionId);
+    if (snapshotBase64) tab.write(b64ToBytes(snapshotBase64));
     this.flushPending(tab);
     if (descriptor.exited) tab.markExited('exited');
   }

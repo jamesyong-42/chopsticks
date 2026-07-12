@@ -16,7 +16,11 @@ await mkdir(dist, { recursive: true });
 
 await Promise.all([
   // Electron main: CommonJS (the conventional Electron main entry format).
-  // packages stay external so electron/tsx resolve at runtime.
+  // @vibecook/avocado-sdk is ESM-only; Electron 32's Node (20.18) cannot
+  // require() an ES module, so bundle it in rather than leaving it external.
+  // electron/tsx are resolved at runtime; node-pty is never loaded here (the
+  // pty-host owns all PTYs) so it stays external to avoid pulling the native
+  // module into the Electron main bundle.
   build({
     ...shared,
     entryPoints: [join(root, 'src/main/main.ts')],
@@ -24,7 +28,7 @@ await Promise.all([
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    packages: 'external',
+    external: ['electron', 'tsx', 'node-pty'],
   }),
   // Preload must be CommonJS under sandbox: true; only electron is external.
   build({

@@ -14,7 +14,6 @@ import type {
   ExitEvent,
   ReplayResult,
   SessionDescriptor,
-  TerminateResult,
 } from '../protocol.js';
 
 const bridge: ChopsticksBridge = {
@@ -24,9 +23,8 @@ const bridge: ChopsticksBridge = {
     ipcRenderer.invoke('chopsticks:write', sessionId, dataBase64),
   resize: (sessionId: string, cols: number, rows: number): Promise<void> =>
     ipcRenderer.invoke('chopsticks:resize', sessionId, cols, rows),
-  terminate: (sessionId: string): Promise<TerminateResult> => ipcRenderer.invoke('chopsticks:terminate', sessionId),
-  replay: (sessionId: string, afterSequence: number): Promise<ReplayResult> =>
-    ipcRenderer.invoke('chopsticks:replay', sessionId, afterSequence),
+  terminate: (sessionId: string): Promise<void> => ipcRenderer.invoke('chopsticks:terminate', sessionId),
+  replay: (sessionId: string): Promise<ReplayResult> => ipcRenderer.invoke('chopsticks:replay', sessionId),
   list: (): Promise<SessionDescriptor[]> => ipcRenderer.invoke('chopsticks:list'),
   onChunk: (cb: (chunks: ChunkEvent[]) => void): (() => void) => {
     const listener = (_e: unknown, chunks: ChunkEvent[]): void => cb(chunks);
