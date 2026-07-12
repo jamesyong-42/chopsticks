@@ -10,10 +10,16 @@
  * taken after the distributor drains reflects every byte delivered so far.
  */
 
-import { Terminal, type ITerminalAddon } from '@xterm/headless';
+// @xterm/headless is CommonJS; cjs-module-lexer can't see `Terminal` as a named
+// export, so real-ESM consumers must reach it through the default export. The class
+// is imported for its type (aliased to avoid colliding with the value below).
+import headless from '@xterm/headless';
+import type { ITerminalAddon, Terminal as XtermTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import type { TerminalChunk, TerminalSink } from './distributor.js';
 import type { RingReplay } from './ring-buffer.js';
+
+const { Terminal } = headless;
 
 export interface HeadlessMirrorOptions {
   cols?: number;
@@ -41,7 +47,7 @@ export interface HeadlessMirror {
 const TRUNCATED_MARKER = '\x1b[2m…output truncated…\x1b[0m\r\n';
 
 /** Resolve once xterm has parsed the written bytes into the buffer. */
-function write(terminal: Terminal, data: string | Uint8Array): Promise<void> {
+function write(terminal: XtermTerminal, data: string | Uint8Array): Promise<void> {
   return new Promise((resolve) => terminal.write(data, resolve));
 }
 
