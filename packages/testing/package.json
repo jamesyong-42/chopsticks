@@ -1,0 +1,22 @@
+{
+  "name": "@vibecook/chopsticks-testing",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Test harness for the chopsticks runtime: fake terminal agent, captured hook fixtures, synthetic hook payloads.",
+  "license": "MIT",
+  "author": "James Yong",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "bin", "fixtures"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}
