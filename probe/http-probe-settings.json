@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:59999/hooks",
+            "headers": {
+              "Authorization": "Bearer $CHOPSTICKS_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CHOPSTICKS_HOOK_TOKEN"
+            ],
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

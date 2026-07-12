@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/MessageDisplay.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/MessageDisplay.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "PermissionResolved": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/PermissionResolved.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/PermissionResolved.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "TurnStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/TurnStart.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/TurnStart.jsonl\"'"
+          }
+        ]
+      }
+    ],
+    "BogusEventProbe": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/BogusEventProbe.jsonl\"; echo >> \"/Users/jamesyong/Projects/project100/p008/chopsticks/probe/captures/BogusEventProbe.jsonl\"'"
+          }
+        ]
+      }
+    ]
+  }
+}
