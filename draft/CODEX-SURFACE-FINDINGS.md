@@ -165,3 +165,21 @@ Drove `codex app-server` (stdio JSON-RPC) end-to-end against live Codex, read-on
 **Still deferred (later phases, not blocking):** #3 native-TUI-via-`codex --remote unix://` coexistence with protocol-side `TurnStart` (C6); #5 `notify` payload (superseded by the protocol for observation); #6 write-mode approvals (`workspace-write` + approval `ServerRequest` round-trip — C4).
 
 **C1 verdict: GO — the structured driver is real, identity-clean, and spaghetti-joinable.** Proceed to C2 (normalizer over these captures).
+
+---
+
+## 8. C6a — native-TUI coexistence probe (`--remote` over WebSocket)
+
+Resolves §6 deferral #3, live against codex 0.144.2. Probes: `probe/codex/c6-ws-probe.mjs`, `c6-pty-attach-probe.mjs`.
+
+**The socket transport is WebSocket, not NDJSON.** `codex app-server --listen ws://IP:PORT | unix://<sock>` speaks JSON-RPC over **WebSocket** (only `stdio://` uses NDJSON). Raw NDJSON/`Content-Length` to the socket gets silence. Gotchas: `--listen unix://` needs a **real path** (macOS `/tmp` is a symlink → the app-server's `lstat` rejects it with "not a directory"); the server logs "binds localhost only" and exposes `/readyz` + `/healthz`. Node's **built-in global `WebSocket`** connects to `ws://`TCP with no extra deps, and **localhost needs NO auth token** (the `--remote-auth-token-env` bearer is for remote/pairing access).
+
+**Same JSON-RPC over WS.** `initialize → thread/start → notifications` behave exactly as stdio. `thread/list` → `{ data: [...] }`; `thread/read` → `{ thread: {...} }` (incl. the rollout path).
+
+**The native TUI attaches and renders.** `codex --remote ws://127.0.0.1:PORT` under a real PTY (node-pty) renders the native Codex TUI (the `╭─ OpenAI Codex (v0.144.2) ─╮` banner, prompt, model/dir) — no auth, no errors.
+
+**Coexistence CONFIRMED — the C6 model.** With a controller WS client AND the native TUI attached to the *same* app-server: the user types a prompt in the TUI → a new thread is created (`preview` = the prompt) → the controller observes it (`thread/list` picks it up, `thread/read` returns it, and it receives `thread/started` + `thread/status/changed` notifications). The TUI renders the assistant reply. **Native terminal + structured observation on one server, one thread.**
+
+**C6 wiring implication.** Broadcast notifications delivered thread-level events (`thread/started`, `thread/status/changed`) but NOT the fine-grained turn/item stream for a thread the controller didn't *initiate*. The schema has thread subscribe/unsubscribe → the C6 controller flow is: observe `thread/started` → `thread/read` (history) + **subscribe** (live turn/item stream) → normalizer. To confirm in the C6 build.
+
+**C6 verdict: GO.** Model: chopsticks main spawns one `codex app-server --listen ws://127.0.0.1:<port>`, connects a **WS controller** (observe + inject), and the renderer PTY runs `codex --remote ws://<port>` for the native display. Needs a **WebSocket `Transport`** for the app-server client — the injected-transport seam (C4) already supports this, so **no driver changes**, just a new transport implementation. §6 #3 resolved.
