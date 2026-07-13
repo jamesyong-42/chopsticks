@@ -183,4 +183,39 @@ describe('createClaudeSession (full loop, test-as-Claude)', () => {
     sessions = [];
     expect(existsSync(prepared.settingsPath)).toBe(false);
   });
+
+  it('resume spawns with the resumed id and its bridge accepts only that session', async () => {
+    const resumeId = '64a61b19-f4d8-4f96-ba56-07024b470813';
+    let prepared: PreparedClaudeSession | undefined;
+    const session = await createClaudeSession({
+      cwd: '/tmp',
+      resume: resumeId,
+      ports: {
+        spawn: async (p) => {
+          prepared = p;
+          return { runtimeSessionId: 'rt-resume' };
+        },
+        write: () => undefined,
+      },
+    });
+    sessions.push(session);
+
+    expect(session.sessionId).toBe(resumeId);
+    expect(prepared!.args).toContain('--resume');
+    expect(prepared!.args).not.toContain('--session-id');
+
+    // The bridge is scoped to the resumed id — a hook for it lands in state.
+    const endpoint = (
+      JSON.parse(readFileSync(prepared!.settingsPath, 'utf8')) as {
+        hooks: Record<string, Array<{ hooks: Array<{ url?: string }> }>>;
+      }
+    ).hooks.UserPromptSubmit[0].hooks[0].url!;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${prepared!.env.CHOPSTICKS_HOOK_TOKEN}` },
+      body: JSON.stringify({ session_id: resumeId, cwd: '/tmp', hook_event_name: 'SessionStart' }),
+    });
+    expect(res.status).toBe(200);
+    expect(session.observationLevel()).toBe('native-hooks');
+  });
 });

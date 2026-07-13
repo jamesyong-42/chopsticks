@@ -99,4 +99,15 @@ describe('prepareClaudeSession', () => {
     expect(p.args[p.args.indexOf('--permission-mode') + 1]).toBe('default');
     expect(p.args).not.toContain('--name');
   });
+
+  it('resume uses --resume with the resumed id and NEVER --session-id (mutually exclusive)', async () => {
+    const resumeId = '64a61b19-f4d8-4f96-ba56-07024b470813';
+    const p = await prepare({ resume: resumeId });
+    expect(p.sessionId).toBe(resumeId); // join contract preserved: same id
+    expect(p.args).toContain('--resume');
+    expect(p.args[p.args.indexOf('--resume') + 1]).toBe(resumeId);
+    expect(p.args).not.toContain('--session-id');
+    // Settings still attach on resume (the hook bridge follows a resumed session).
+    expect(p.args).toContain('--settings');
+  });
 });

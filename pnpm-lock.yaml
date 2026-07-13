@@ -105,6 +105,8 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
+  packages/record: {}
+
   packages/testing: {}
 
   packages/workspaces: {}

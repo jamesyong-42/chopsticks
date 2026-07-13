@@ -28,6 +28,14 @@ export interface PrepareClaudeSessionOptions {
   token: string;
   executable?: string;
   permissionMode?: string;
+  /**
+   * Resume an existing session by its id instead of starting fresh. Probed
+   * (HOOK-SURFACE-FINDINGS §6): `--resume <id>` continues the SAME session and
+   * transcript in place, so the id/join-contract is preserved automatically —
+   * `--session-id` is NOT passed alongside it. When set, `sessionId` is
+   * ignored in favor of this id.
+   */
+  resume?: string;
   /** Override the settings-file directory (tests); default is an mkdtemp dir. */
   settingsDir?: string;
 }
@@ -44,7 +52,9 @@ export interface PreparedClaudeSession {
 }
 
 export async function prepareClaudeSession(options: PrepareClaudeSessionOptions): Promise<PreparedClaudeSession> {
-  const sessionId = options.sessionId ?? randomUUID();
+  // On resume the session keeps its own id + transcript, so that id IS the
+  // session id; otherwise reuse a caller-chosen id or mint one.
+  const sessionId = options.resume ?? options.sessionId ?? randomUUID();
   const settings = generateHookSettings({ endpoint: options.endpoint, tokenEnvVar: options.tokenEnvVar });
 
   // Own the temp dir only when we create it; a caller-supplied settingsDir is
@@ -55,7 +65,10 @@ export async function prepareClaudeSession(options: PrepareClaudeSessionOptions)
   const settingsPath = join(dir, `${sessionId}.settings.json`);
   await writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
 
-  const args = ['--session-id', sessionId];
+  // --resume and --session-id are mutually exclusive: resume continues an
+  // existing id, so passing --session-id would fight it. --settings composes
+  // with both (the hook bridge attaches to resumed sessions too — probed §6).
+  const args = options.resume ? ['--resume', sessionId] : ['--session-id', sessionId];
   if (options.title !== undefined) args.push('--name', options.title);
   args.push('--settings', settingsPath, '--permission-mode', options.permissionMode ?? 'default');
 

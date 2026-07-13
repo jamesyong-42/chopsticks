@@ -51,6 +51,11 @@ export interface CreateClaudeSessionOptions {
   title?: string;
   executable?: string;
   permissionMode?: string;
+  /**
+   * Resume an existing session by id (native `--resume`; the session keeps its
+   * transcript and id — HOOK-SURFACE-FINDINGS §6). Omit to start fresh.
+   */
+  resume?: string;
   /** Observer fallback cadence; hook envelopes are the primary poll signal. */
   transcriptPollIntervalMs?: number;
 }
@@ -76,8 +81,9 @@ export interface ClaudeSession {
 export async function createClaudeSession(options: CreateClaudeSessionOptions): Promise<ClaudeSession> {
   // Session id first: the bridge must be able to enforce its allow-list from
   // the instant it starts listening, with no window where the closure could
-  // dereference a not-yet-prepared session.
-  const sessionId = randomUUID();
+  // dereference a not-yet-prepared session. On resume the id is the session
+  // being resumed (it keeps its own id); otherwise mint a fresh one.
+  const sessionId = options.resume ?? randomUUID();
   const bridge: HookBridge = createHookBridge({
     allowSession: (id) => id === sessionId,
   });
@@ -86,6 +92,7 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
   const prepared = await prepareClaudeSession({
     cwd: options.cwd,
     sessionId,
+    resume: options.resume,
     title: options.title,
     executable: options.executable,
     permissionMode: options.permissionMode,
