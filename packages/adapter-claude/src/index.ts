@@ -8,3 +8,6 @@
 export * from './registry.js';
 export * from './hook-bridge.js';
 export * from './normalizer.js';
+export * from './detection.js';
+export * from './settings.js';
+export * from './prepare.js';
