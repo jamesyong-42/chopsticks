@@ -58,6 +58,16 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  packages/adapter-claude:
+    dependencies:
+      '@vibecook/chopsticks-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@vibecook/chopsticks-testing':
+        specifier: workspace:*
+        version: link:../testing
+
   packages/core:
     devDependencies:
       fast-check:
