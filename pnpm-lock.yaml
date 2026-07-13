@@ -83,6 +83,12 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
+  packages/adapter-codex:
+    dependencies:
+      '@vibecook/chopsticks-core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core:
     devDependencies:
       fast-check:
