@@ -105,15 +105,15 @@ function startHub(): void {
   });
 
   // Exactly one session host connects; capture its transport and its exits.
-  // Exit is taken from the transport's `sessionEnded` (carries the exit code and
-  // fires reliably) rather than manager 'exit', which the manager suppresses for
-  // proxy sessions by disposing them first.
+  // Exit is taken from the transport's `sessionEnded` for per-connection
+  // scoping (manager 'exit' also works since avocado 0.2.2, which fixed the
+  // dispose-before-exit race for proxy sessions and put the signal on the wire).
   bridge.on('transportCreated', (_id: string, transport: IPCPTYTransport) => {
     hostTransport = transport;
     resolveTransport(transport);
-    transport.on('sessionEnded', (remoteId: string, exitCode: number) => {
+    transport.on('sessionEnded', (remoteId: string, exitCode: number, signal?: string) => {
       const sessionId = createNamespacedId('ipc', transport.transportId, remoteId);
-      forwardExit({ sessionId, exitCode, signal: null, reason: classifyReason(exitCode) });
+      forwardExit({ sessionId, exitCode, signal: signal ?? null, reason: classifyReason(exitCode, signal) });
     });
   });
 
@@ -153,9 +153,9 @@ function exitAfterCleanup(code: number): void {
   app.exit(code);
 }
 
-/** Coarse exit classification for renderer display (signal is not on the wire). */
-function classifyReason(exitCode: number | null): string {
-  if (exitCode === null) return 'signal';
+/** Exit classification for renderer display; signal rides session:end since avocado 0.2.2. */
+function classifyReason(exitCode: number | null, signal?: string): string {
+  if (signal || exitCode === null) return 'signal';
   return exitCode === 0 ? 'completed' : 'crash';
 }
 

@@ -44,8 +44,9 @@ export interface ChunkEvent {
 export interface ExitEvent {
   sessionId: string;
   exitCode: number | null;
-  signal: number | null;
-  /** Coarse classification for display: completed | crash | signal. */
+  /** Signal name (e.g. "SIGTERM") — rides avocado's session:end since 0.2.2. */
+  signal: string | null;
+  /** Classification for display: completed | crash | signal. */
   reason: string;
 }
 
