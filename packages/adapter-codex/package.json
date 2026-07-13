@@ -28,5 +28,8 @@
   },
   "dependencies": {
     "@vibecook/chopsticks-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@vibecook/chopsticks-testing": "workspace:*"
   }
 }

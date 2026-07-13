@@ -88,6 +88,10 @@ importers:
       '@vibecook/chopsticks-core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@vibecook/chopsticks-testing':
+        specifier: workspace:*
+        version: link:../testing
 
   packages/core:
     devDependencies:
@@ -116,7 +120,15 @@ importers:
 
   packages/record: {}
 
-  packages/testing: {}
+  packages/testing:
+    dependencies:
+      '@vibecook/chopsticks-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
 
   packages/workspaces: {}
 
