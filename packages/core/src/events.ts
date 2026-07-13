@@ -12,8 +12,14 @@
 /** DESIGN ADR-001 — native-tui is a first-class mode, not a fallback. */
 export type AgentExecutionMode = 'native-tui' | 'structured' | 'acp';
 
-/** DESIGN §19.2 — the runtime must never overstate what it can observe. */
-export type ObservationLevel = 'native-hooks' | 'native-log' | 'workspace-process' | 'terminal-only';
+/**
+ * DESIGN §19.2 — the runtime must never overstate what it can observe.
+ * `structured` (above `native-hooks`) is a driver whose native surface is an
+ * authoritative structured protocol — streaming semantic events AND structured
+ * approvals — e.g. Codex's app-server (M5). `native-hooks` is authoritative
+ * lifecycle/tool state via hooks; the rest degrade from there.
+ */
+export type ObservationLevel = 'structured' | 'native-hooks' | 'native-log' | 'workspace-process' | 'terminal-only';
 
 /** DESIGN §14.1 — where a normalized event came from. */
 export type AgentEventSource =

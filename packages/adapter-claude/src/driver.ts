@@ -27,13 +27,13 @@ import {
   reduceSessionState,
   type AgentEvent,
   type AgentEventEnvelope,
+  type AgentSession,
   type ObservationLevel,
-  type SessionRuntimeState,
 } from '@vibecook/chopsticks-core';
 import { createHookBridge, type HookBridge } from './hook-bridge.js';
 import { ClaudeHookNormalizer, type ClaudeHookPayload } from './normalizer.js';
 import { prepareClaudeSession, cleanupClaudeSession, type PreparedClaudeSession } from './prepare.js';
-import { createPromptInjector, type PromptInjector, type PromptReceipt, type PromptSubmission } from './prompt.js';
+import { createPromptInjector, type PromptInjector } from './prompt.js';
 import { assistantMessageEvent, createTranscriptObserver, type TranscriptObserver } from './transcript-observer.js';
 
 const TOKEN_ENV_VAR = 'CHOPSTICKS_HOOK_TOKEN';
@@ -60,22 +60,15 @@ export interface CreateClaudeSessionOptions {
   transcriptPollIntervalMs?: number;
 }
 
-export interface ClaudeSession {
-  /** The `--session-id` UUID — the chopsticks ↔ spaghetti join contract. */
-  readonly sessionId: string;
-  /** The host's id for the terminal session (attach/write/kill routing). */
-  readonly runtimeSessionId: string;
-  state(): SessionRuntimeState;
-  observationLevel(): ObservationLevel;
+/**
+ * The core `AgentSession` handle (sessionId is the `--session-id` UUID = the
+ * chopsticks ↔ spaghetti join contract) plus Claude-specific transcript extras.
+ */
+export interface ClaudeSession extends AgentSession {
+  /** Absolute path to this session's transcript JSONL (handed to us by hooks). */
   transcriptPath(): string | undefined;
-  onEvent(listener: (envelope: AgentEventEnvelope) => void): () => void;
-  submitPrompt(submission: PromptSubmission): Promise<PromptReceipt>;
-  /** Wire from the terminal input path: any human keystroke (user priority). */
-  notifyUserInput(): void;
   /** Force a transcript delta parse now (tests, explicit refresh). */
   pollTranscript(): Promise<void>;
-  /** Tear down observation (bridge, observer). Process lifecycle stays with the host. */
-  dispose(): Promise<void>;
 }
 
 export async function createClaudeSession(options: CreateClaudeSessionOptions): Promise<ClaudeSession> {

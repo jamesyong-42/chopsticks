@@ -8,5 +8,6 @@
 
 export * from './events.js';
 export * from './state.js';
+export * from './session.js';
 
 export const CHOPSTICKS_CORE_VERSION = '0.0.0';

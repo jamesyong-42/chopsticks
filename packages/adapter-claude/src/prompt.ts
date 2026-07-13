@@ -20,20 +20,13 @@
  * and the driver wire it to whatever owns the terminal.
  */
 
+// Prompt submission/receipt types are the shared contract (DESIGN §17) — lifted
+// to core in M5 C3. Re-exported here so this module and the barrel keep working.
+import type { PromptSubmission, PromptReceipt } from '@vibecook/chopsticks-core';
+export type { PromptSubmission, PromptReceipt };
+
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
-
-export interface PromptSubmission {
-  text: string;
-  /** paste-and-submit (default) appends Enter; paste-only leaves it staged. */
-  mode?: 'paste-and-submit' | 'paste-only';
-  confirmationTimeoutMs?: number;
-}
-
-export type PromptReceipt =
-  | { status: 'confirmed'; turnId?: string }
-  | { status: 'rejected'; reason: string }
-  | { status: 'uncertain'; reason: string };
 
 export interface PromptInjectorOptions {
   write: (data: string) => void;
