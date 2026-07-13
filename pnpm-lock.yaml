@@ -104,6 +104,8 @@ importers:
 
   packages/testing: {}
 
+  packages/workspaces: {}
+
 packages:
 
   '@electron/get@2.0.3':
