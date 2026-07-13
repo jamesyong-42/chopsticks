@@ -13,17 +13,40 @@
  */
 
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
-import type { AgentStateMessage, PromptReceipt } from '../protocol.js';
+import type {
+  AgentStateMessage,
+  PromptReceipt,
+  WorkspaceDiff,
+  WorkspaceFinalEvent,
+  WorkspaceInfo,
+} from '../protocol.js';
 
 const EVENT_TAIL_MAX = 50;
 const ASSISTANT_TRUNCATE = 280;
+const WS_FILES_MAX = 12;
 
 type SubmitFn = (runtimeSessionId: string, text: string) => Promise<PromptReceipt>;
+
+/**
+ * The renderer's view of one session's workspace: the info known at creation, the
+ * latest live diff (live poll / agent-state piggyback), and the final record once
+ * the session exits (which also carries a retained-worktree notice).
+ */
+export interface WorkspacePanelData {
+  info: WorkspaceInfo;
+  diff?: WorkspaceDiff;
+  final?: WorkspaceFinalEvent;
+}
 
 /** Trim + collapse whitespace for a compact one-liner in the event tail. */
 function oneLine(text: string, max = 80): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+}
+
+/** Keep a path readable: an over-long root shows its tail with a leading ellipsis. */
+function truncatePath(p: string, max = 42): string {
+  return p.length <= max ? p : '…' + p.slice(p.length - (max - 1));
 }
 
 /** A short, human summary of an envelope for the scrolling tail. */
@@ -91,6 +114,15 @@ export class ClaudePanel {
   private readonly badge: HTMLSpanElement;
   private readonly obs: HTMLSpanElement;
   private readonly turnLine: HTMLDivElement;
+  // Workspace section.
+  private readonly wsSection: HTMLElement;
+  private readonly wsBadge: HTMLSpanElement;
+  private readonly wsBranch: HTMLSpanElement;
+  private readonly wsRoot: HTMLDivElement;
+  private readonly wsCommit: HTMLDivElement;
+  private readonly wsRetained: HTMLDivElement;
+  private readonly wsFilesHeading: HTMLHeadingElement;
+  private readonly wsFiles: HTMLUListElement;
   private readonly toolsList: HTMLUListElement;
   private readonly permsSection: HTMLElement;
   private readonly permsList: HTMLUListElement;
@@ -116,6 +148,21 @@ export class ClaudePanel {
     header.append(this.badge, this.obs);
 
     this.turnLine = el('div', 'panel-turn');
+
+    // Workspace: isolation badge + branch, root path, commit, retained notice,
+    // and the files-touched list. Hidden until a Claude tab supplies its data.
+    this.wsSection = el('section', 'panel-section workspace-section');
+    const wsHeader = el('div', 'ws-header');
+    wsHeader.append(el('h4', undefined, 'Workspace'));
+    this.wsBadge = el('span', 'ws-badge');
+    this.wsBranch = el('span', 'ws-branch');
+    wsHeader.append(this.wsBadge, this.wsBranch);
+    this.wsRoot = el('div', 'ws-root');
+    this.wsCommit = el('div', 'ws-commit');
+    this.wsRetained = el('div', 'ws-retained');
+    this.wsFilesHeading = el('h5', 'ws-files-heading', 'Files touched');
+    this.wsFiles = el('ul', 'ws-files');
+    this.wsSection.append(wsHeader, this.wsRoot, this.wsCommit, this.wsRetained, this.wsFilesHeading, this.wsFiles);
 
     const toolsSection = el('section', 'panel-section');
     toolsSection.append(el('h4', undefined, 'In-flight tools'));
@@ -157,7 +204,16 @@ export class ClaudePanel {
     });
     inject.append(this.input, this.sendBtn, this.receiptBox);
 
-    root.append(header, this.turnLine, toolsSection, this.permsSection, assistantSection, eventsSection, inject);
+    root.append(
+      header,
+      this.turnLine,
+      this.wsSection,
+      toolsSection,
+      this.permsSection,
+      assistantSection,
+      eventsSection,
+      inject,
+    );
 
     this.elapsedTimer = setInterval(() => this.renderTurn(), 1000);
   }
@@ -165,7 +221,12 @@ export class ClaudePanel {
   private lastAssistant: string | undefined;
 
   /** Show/refresh the panel for one session. A different id resets the inject box. */
-  render(runtimeSessionId: string, msg: AgentStateMessage | undefined, events: AgentEventEnvelope[]): void {
+  render(
+    runtimeSessionId: string,
+    msg: AgentStateMessage | undefined,
+    events: AgentEventEnvelope[],
+    workspace: WorkspacePanelData | undefined,
+  ): void {
     if (runtimeSessionId !== this.shownSessionId) {
       this.shownSessionId = runtimeSessionId;
       this.assistantExpanded = false;
@@ -173,7 +234,54 @@ export class ClaudePanel {
     }
     this.root.classList.remove('hidden');
     this.renderState(msg);
+    this.renderWorkspace(workspace);
     this.renderEvents(events);
+  }
+
+  private renderWorkspace(data: WorkspacePanelData | undefined): void {
+    if (!data) {
+      this.wsSection.classList.add('hidden');
+      return;
+    }
+    this.wsSection.classList.remove('hidden');
+    const { info, diff, final } = data;
+
+    this.wsBadge.textContent = info.isolation;
+    this.wsBadge.dataset.isolation = info.isolation;
+
+    this.wsBranch.textContent = info.branch ?? '';
+    this.wsBranch.classList.toggle('hidden', !info.branch);
+
+    // Root path: truncated head; full value lives in the title attr.
+    this.wsRoot.textContent = truncatePath(info.root);
+    this.wsRoot.title = info.root;
+
+    // Commit: final short-sha once exited, otherwise the base commit.
+    const commit = final?.metadata.finalCommit ?? info.initialCommit;
+    this.wsCommit.textContent = commit ? `${final ? 'final' : 'base'} ${commit.slice(0, 8)}` : '';
+    this.wsCommit.classList.toggle('hidden', !commit);
+
+    // Retained-worktree notice: highlighted, only when a dirty worktree was kept.
+    const retained = final?.retained ?? false;
+    this.wsRetained.textContent = retained ? `worktree retained — ${final?.reason ?? 'uncommitted changes kept'}` : '';
+    this.wsRetained.classList.toggle('hidden', !retained);
+
+    // Files touched: final metadata after exit, else the latest live diff.
+    const files = final ? final.metadata.filesTouched : (diff?.filesTouched ?? []);
+    this.wsFilesHeading.textContent = final ? 'Files touched (final)' : 'Files touched';
+    this.wsFiles.replaceChildren();
+    if (files.length === 0) {
+      this.wsFiles.append(el('li', 'empty', final ? 'none' : '—'));
+    } else {
+      for (const f of files.slice(0, WS_FILES_MAX)) {
+        const li = el('li', 'ws-file', f);
+        li.title = f;
+        this.wsFiles.append(li);
+      }
+      if (files.length > WS_FILES_MAX) {
+        this.wsFiles.append(el('li', 'ws-file more', `… +${files.length - WS_FILES_MAX} more`));
+      }
+    }
   }
 
   /** Hide the panel (active tab is not a Claude session). */

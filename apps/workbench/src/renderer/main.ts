@@ -20,8 +20,9 @@ import type {
   CreateSessionOptions,
   ExitEvent,
   SessionDescriptor,
+  WorkspaceFinalEvent,
 } from '../protocol.js';
-import { ClaudePanel } from './claude-panel.js';
+import { ClaudePanel, type WorkspacePanelData } from './claude-panel.js';
 
 const chopsticks = window.chopsticks;
 const enc = new TextEncoder();
@@ -148,6 +149,10 @@ class Workbench {
   private readonly claudeState = new Map<string, AgentStateMessage>();
   /** Bounded event tail per Claude session (runtimeSessionId). */
   private readonly claudeEvents = new Map<string, AgentEventEnvelope[]>();
+  /** Workspace view per Claude session: initial info, live diff, final record. */
+  private readonly claudeWorkspace = new Map<string, WorkspacePanelData>();
+  /** Slow-poll timers refreshing the live diff, keyed by runtimeSessionId. */
+  private readonly diffPollers = new Map<string, ReturnType<typeof setInterval>>();
   private activeId: string | undefined;
 
   constructor(
@@ -159,6 +164,44 @@ class Workbench {
     chopsticks.onExit((exit) => this.onExit(exit));
     chopsticks.onAgentEvents((events) => this.onAgentEvents(events));
     chopsticks.onAgentState((state) => this.onAgentState(state));
+    chopsticks.onWorkspaceFinal((event) => this.onWorkspaceFinal(event));
+  }
+
+  private static readonly DIFF_POLL_MS = 10_000;
+
+  /** Live-refresh one session's workspace diff, then repaint if it is showing. */
+  private async refreshDiff(runtimeSessionId: string): Promise<void> {
+    const data = this.claudeWorkspace.get(runtimeSessionId);
+    // Once finalized, the workspace is gone main-side (diff → null); keep final.
+    if (!data || data.final) return;
+    const diff = await chopsticks.workspaceDiff(runtimeSessionId).catch(() => null);
+    if (!diff) return;
+    const current = this.claudeWorkspace.get(runtimeSessionId);
+    if (!current || current.final) return;
+    current.diff = diff;
+    if (runtimeSessionId === this.activeId) this.refreshPanel();
+  }
+
+  private startDiffPoll(runtimeSessionId: string): void {
+    if (this.diffPollers.has(runtimeSessionId)) return;
+    const timer = setInterval(() => void this.refreshDiff(runtimeSessionId), Workbench.DIFF_POLL_MS);
+    this.diffPollers.set(runtimeSessionId, timer);
+  }
+
+  private stopDiffPoll(runtimeSessionId: string): void {
+    const timer = this.diffPollers.get(runtimeSessionId);
+    if (timer) clearInterval(timer);
+    this.diffPollers.delete(runtimeSessionId);
+  }
+
+  private onWorkspaceFinal(event: WorkspaceFinalEvent): void {
+    this.stopDiffPoll(event.runtimeSessionId);
+    const data = this.claudeWorkspace.get(event.runtimeSessionId);
+    if (data) {
+      data.final = event;
+      data.diff = event.metadata.finalDiff;
+    }
+    if (event.runtimeSessionId === this.activeId) this.refreshPanel();
   }
 
   private makeTab(sessionId: string, title: string, isClaude = false): TerminalTab {
@@ -191,6 +234,8 @@ class Workbench {
 
   private onAgentState(msg: AgentStateMessage): void {
     this.claudeState.set(msg.runtimeSessionId, msg);
+    // Cheap piggyback: refresh the workspace diff whenever agent state moves.
+    void this.refreshDiff(msg.runtimeSessionId);
     if (msg.runtimeSessionId === this.activeId) this.refreshPanel();
   }
 
@@ -199,7 +244,7 @@ class Workbench {
     const id = this.activeId;
     const tab = id ? this.tabs.get(id) : undefined;
     if (id && tab?.isClaude) {
-      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? []);
+      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], this.claudeWorkspace.get(id));
     } else {
       this.panel.hide();
     }
@@ -232,6 +277,8 @@ class Workbench {
 
   private onExit(exit: ExitEvent): void {
     this.tabs.get(exit.sessionId)?.markExited(exit.reason);
+    // Stop polling now; the workspaceFinal push replaces the live diff shortly.
+    this.stopDiffPoll(exit.sessionId);
   }
 
   async newSession(opts: Omit<CreateSessionOptions, 'cols' | 'rows'>, title: string): Promise<void> {
@@ -250,14 +297,21 @@ class Workbench {
   }
 
   /** Start a Claude session: the driver lives in main; this tab is its terminal + panel. */
-  async newClaudeSession(): Promise<void> {
+  async newClaudeSession(isolation: 'shared' | 'worktree'): Promise<void> {
     const tempId = `pending-${Math.random().toString(36).slice(2)}`;
-    const tab = this.makeTab(tempId, 'claude', true);
+    const tab = this.makeTab(tempId, isolation === 'worktree' ? 'claude ⑂' : 'claude', true);
     this.activateTab(tab);
     tab.refit();
     try {
-      const info = await chopsticks.createClaudeSession({});
-      this.rebind(tab, tempId, info.runtimeSessionId);
+      const result = await chopsticks.createClaudeSession({ workspace: { isolation } });
+      // A workspace policy conflict / create failure comes back structured, not thrown.
+      if ('error' in result) {
+        tab.markExited(`${result.error.code}: ${result.error.message}`);
+        return;
+      }
+      this.rebind(tab, tempId, result.runtimeSessionId);
+      this.claudeWorkspace.set(result.runtimeSessionId, { info: result.workspace });
+      this.startDiffPoll(result.runtimeSessionId);
       this.flushPending(tab);
       this.refreshPanel();
     } catch (err) {
@@ -310,6 +364,8 @@ class Workbench {
     this.tabs.delete(sessionId);
     this.claudeState.delete(sessionId);
     this.claudeEvents.delete(sessionId);
+    this.claudeWorkspace.delete(sessionId);
+    this.stopDiffPoll(sessionId);
     if (this.activeId === sessionId) {
       this.activeId = undefined;
       const next = this.tabs.keys().next();
@@ -339,6 +395,10 @@ document
 document
   .getElementById('new-fake-agent')
   ?.addEventListener('click', () => void workbench.newSession({ kind: 'fake-agent' }, 'fake agent'));
-document.getElementById('new-claude')?.addEventListener('click', () => void workbench.newClaudeSession());
+const isolationSelect = document.getElementById('claude-isolation') as HTMLSelectElement | null;
+document.getElementById('new-claude')?.addEventListener('click', () => {
+  const isolation = isolationSelect?.value === 'worktree' ? 'worktree' : 'shared';
+  void workbench.newClaudeSession(isolation);
+});
 
 void workbench.restore();

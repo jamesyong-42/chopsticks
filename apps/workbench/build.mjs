@@ -20,6 +20,9 @@ await Promise.all([
   // @vibecook/avocado-sdk AND @vibecook/chopsticks-adapter-claude (+ its dep
   // @vibecook/spaghetti-sdk) are ESM; Electron 32's Node (20.18) cannot
   // require() an ES module, so bundle them in rather than leaving them external.
+  // @vibecook/chopsticks-workspaces is likewise bundled (pure TS over
+  // node:child_process; no native deps, no new externals) by being absent from
+  // the external list below — esbuild inlines its TS the same way.
   // electron/tsx are resolved at runtime; node-pty is never loaded here (the
   // pty-host owns all PTYs) so it stays external to avoid pulling the native
   // module into the Electron main bundle. @parcel/watcher (spaghetti-sdk's

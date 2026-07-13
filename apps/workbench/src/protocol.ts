@@ -20,6 +20,16 @@
 // Type-only imports: erased at build time, so the runtime adapter/core code is
 // never pulled into the sandboxed preload or the browser renderer bundle.
 import type { AgentEventEnvelope, ObservationLevel } from '@vibecook/chopsticks-core';
+import type {
+  WorkspaceDiff,
+  WorkspaceErrorCode,
+  WorkspaceIsolation,
+  WorkspaceSessionMetadata,
+} from '@vibecook/chopsticks-workspaces';
+
+// Re-exported (type-only, erased) so preload/renderer import the workspace
+// shapes from the one protocol module rather than reaching into the package.
+export type { WorkspaceDiff, WorkspaceIsolation, WorkspaceSessionMetadata } from '@vibecook/chopsticks-workspaces';
 
 /** Renderer-chosen shorthands expanded to a command by the pty-host (never the renderer). */
 export type SessionKind = 'shell' | 'fake-agent';
@@ -77,6 +87,23 @@ export interface CreateClaudeSessionOptions {
   /** Working directory; when omitted, main defaults it to the chopsticks repo root. */
   cwd?: string;
   title?: string;
+  /**
+   * Workspace isolation (DESIGN §20). Omitted → `{ isolation: 'shared' }` on the
+   * repo root (current behavior). The UI offers only shared/worktree; `copy` is a
+   * valid provider but deliberately not surfaced here yet. `path` defaults to
+   * `cwd` (then the repo root) main-side.
+   */
+  workspace?: { isolation: 'shared' | 'worktree'; path?: string };
+}
+
+/** The workspace a Claude session is running in, as the renderer first sees it. */
+export interface WorkspaceInfo {
+  isolation: WorkspaceIsolation;
+  /** The session's cwd (worktree/copy root, or the shared repo root). */
+  root: string;
+  /** worktree only: the branch that holds the session's work product. */
+  branch?: string;
+  initialCommit?: string;
 }
 
 /**
@@ -89,6 +116,31 @@ export interface ClaudeSessionInfo {
   sessionId: string;
   runtimeSessionId: string;
   descriptor: SessionDescriptor;
+  workspace: WorkspaceInfo;
+}
+
+/**
+ * Structured failure for createClaudeSession when the workspace can't be set up
+ * (policy conflict, or create failed). Distinguished from success by the `error`
+ * key so the renderer can surface the code/message instead of an opaque throw.
+ */
+export interface ClaudeSessionFailure {
+  error: { code: WorkspaceErrorCode; message: string };
+}
+
+export type CreateClaudeSessionResult = ClaudeSessionInfo | ClaudeSessionFailure;
+
+/**
+ * Pushed once, when a Claude session's PTY exits: the finalized workspace record.
+ * For a worktree that could not be destroyed because it held uncommitted work,
+ * `retained` is true and `reason` explains — the worktree and branch are kept
+ * (uncommitted work is never silently discarded).
+ */
+export interface WorkspaceFinalEvent {
+  runtimeSessionId: string;
+  metadata: WorkspaceSessionMetadata;
+  retained: boolean;
+  reason?: string;
 }
 
 /** SessionRuntimeState (DESIGN §15) with its Maps flattened to arrays for structured-clone across IPC. */
@@ -146,8 +198,11 @@ export interface ChopsticksBridge {
   onChunk(cb: (chunks: ChunkEvent[]) => void): () => void;
   onExit(cb: (exit: ExitEvent) => void): () => void;
   // Claude session surface (driver lives in main; renderer sees snapshots only).
-  createClaudeSession(opts: CreateClaudeSessionOptions): Promise<ClaudeSessionInfo>;
+  createClaudeSession(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult>;
   submitPrompt(opts: SubmitPromptOptions): Promise<PromptReceipt>;
   onAgentEvents(cb: (events: AgentEventMessage[]) => void): () => void;
   onAgentState(cb: (state: AgentStateMessage) => void): () => void;
+  // Workspace surface: live diff for the panel, and the final record on exit.
+  workspaceDiff(runtimeSessionId: string): Promise<WorkspaceDiff | null>;
+  onWorkspaceFinal(cb: (event: WorkspaceFinalEvent) => void): () => void;
 }

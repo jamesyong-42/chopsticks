@@ -86,6 +86,12 @@ body {
   color: var(--text);
 }
 
+#actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 #actions button {
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -97,6 +103,21 @@ body {
 }
 
 #actions button:hover {
+  border-color: var(--accent);
+}
+
+#claude-isolation {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#claude-isolation:focus {
+  outline: none;
   border-color: var(--accent);
 }
 
@@ -258,6 +279,121 @@ body {
 .perms .perm-name {
   color: #f9e2af;
   font-weight: 600;
+}
+
+/* --- Workspace section ---------------------------------------------------- */
+
+.workspace-section.hidden {
+  display: none;
+}
+
+.ws-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ws-header h4 {
+  margin: 0;
+}
+
+.ws-badge {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(137, 180, 250, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.ws-badge[data-isolation='worktree'] {
+  background: rgba(203, 166, 247, 0.18);
+  color: #cba6f7;
+}
+
+.ws-branch {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: #cba6f7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-branch.hidden {
+  display: none;
+}
+
+.ws-root,
+.ws-commit {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-root.hidden,
+.ws-commit.hidden {
+  display: none;
+}
+
+/* Retained-worktree notice: the "your uncommitted work was kept" highlight. */
+.ws-retained {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid #f9e2af;
+  border-radius: 6px;
+  background: rgba(249, 226, 175, 0.1);
+  color: #f9e2af;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.ws-retained.hidden {
+  display: none;
+}
+
+.ws-files-heading {
+  margin: 8px 0 3px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.ws-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.ws-files li {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-files li.empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.ws-files li.more {
+  color: var(--text-dim);
 }
 
 .assistant-msg {

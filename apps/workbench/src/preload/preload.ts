@@ -12,14 +12,16 @@ import type {
   AgentStateMessage,
   ChopsticksBridge,
   ChunkEvent,
-  ClaudeSessionInfo,
   CreateClaudeSessionOptions,
+  CreateClaudeSessionResult,
   CreateSessionOptions,
   ExitEvent,
   PromptReceipt,
   ReplayResult,
   SessionDescriptor,
   SubmitPromptOptions,
+  WorkspaceDiff,
+  WorkspaceFinalEvent,
 } from '../protocol.js';
 
 const bridge: ChopsticksBridge = {
@@ -42,7 +44,7 @@ const bridge: ChopsticksBridge = {
     ipcRenderer.on('chopsticks:exit', listener);
     return () => ipcRenderer.removeListener('chopsticks:exit', listener);
   },
-  createClaudeSession: (opts: CreateClaudeSessionOptions): Promise<ClaudeSessionInfo> =>
+  createClaudeSession: (opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> =>
     ipcRenderer.invoke('chopsticks:createClaudeSession', opts),
   submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
     ipcRenderer.invoke('chopsticks:submitPrompt', opts),
@@ -55,6 +57,13 @@ const bridge: ChopsticksBridge = {
     const listener = (_e: unknown, state: AgentStateMessage): void => cb(state);
     ipcRenderer.on('chopsticks:agentState', listener);
     return () => ipcRenderer.removeListener('chopsticks:agentState', listener);
+  },
+  workspaceDiff: (runtimeSessionId: string): Promise<WorkspaceDiff | null> =>
+    ipcRenderer.invoke('chopsticks:workspaceDiff', runtimeSessionId),
+  onWorkspaceFinal: (cb: (event: WorkspaceFinalEvent) => void): (() => void) => {
+    const listener = (_e: unknown, event: WorkspaceFinalEvent): void => cb(event);
+    ipcRenderer.on('chopsticks:workspaceFinal', listener);
+    return () => ipcRenderer.removeListener('chopsticks:workspaceFinal', listener);
   },
 };
 

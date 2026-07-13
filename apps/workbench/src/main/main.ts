@@ -39,17 +39,25 @@ import {
 } from '@vibecook/avocado-sdk/transport-ipc';
 import { createClaudeSession, type ClaudeSession } from '@vibecook/chopsticks-adapter-claude';
 import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
+import {
+  assertWorkspacePolicy,
+  createWorkspace,
+  WorkspaceError,
+  type Workspace,
+  type WorkspaceRequest,
+} from '@vibecook/chopsticks-workspaces';
 import type {
   AgentEventMessage,
   ChunkEvent,
-  ClaudeSessionInfo,
   CreateClaudeSessionOptions,
+  CreateClaudeSessionResult,
   CreateSessionOptions,
   ExitEvent,
   PromptReceipt,
   SerializedSessionState,
   SessionDescriptor,
   SubmitPromptOptions,
+  WorkspaceInfo,
 } from '../protocol.js';
 
 // Bundled to CommonJS (dist/main.cjs), the conventional Electron main entry
@@ -116,6 +124,10 @@ let flushTimer: NodeJS.Timeout | undefined;
 // namespaced manager id the terminal surface uses — so terminal I/O and agent
 // observation share one identity.
 const claudeSessions = new Map<string, ClaudeSession>();
+// The workspace each Claude session runs in, keyed by the SAME runtimeSessionId.
+// A shared workspace's destroy() is a no-op by contract; only worktrees are torn
+// down on exit, and never forcibly when dirty (uncommitted work is kept).
+const activeWorkspaces = new Map<string, Workspace>();
 let agentEventBatch: AgentEventMessage[] = [];
 let agentFlushTimer: NodeJS.Timeout | undefined;
 
@@ -224,6 +236,49 @@ function forwardExit(exit: ExitEvent): void {
     claudeSessions.delete(exit.sessionId);
     void claude.dispose().catch(() => undefined);
   }
+  // Finalize the session's workspace: record its final diff, push the metadata,
+  // and (worktree only) remove the worktree — retaining it if it is dirty.
+  const workspace = activeWorkspaces.get(exit.sessionId);
+  if (workspace) {
+    activeWorkspaces.delete(exit.sessionId);
+    void finalizeWorkspace(exit.sessionId, workspace);
+  }
+}
+
+/**
+ * Finalize one workspace and inform the renderer. finalize() snapshots the final
+ * diff/commit; the metadata is already plain JSON, so it rides structured clone
+ * as-is. Worktrees are then destroyed WITHOUT force: a dirty worktree throws
+ * WORKSPACE_DIRTY and is kept (branch + worktree intact), surfaced as
+ * `retained` so the user can recover the uncommitted work. Best-effort: a
+ * finalize failure is logged and the event is skipped rather than thrown.
+ */
+async function finalizeWorkspace(runtimeSessionId: string, workspace: Workspace): Promise<void> {
+  let metadata;
+  try {
+    metadata = await workspace.finalize();
+  } catch (err) {
+    process.stderr.write(`[main] workspace finalize failed (${runtimeSessionId}): ${(err as Error).message}\n`);
+    return;
+  }
+
+  let retained = false;
+  let reason: string | undefined;
+  if (workspace.isolation === 'worktree') {
+    try {
+      await workspace.destroy();
+    } catch (err) {
+      if (err instanceof WorkspaceError && err.code === 'WORKSPACE_DIRTY') {
+        // Never force: keep the worktree and branch so the work isn't lost.
+        retained = true;
+        reason = err.message;
+      } else {
+        process.stderr.write(`[main] workspace destroy failed (${runtimeSessionId}): ${(err as Error).message}\n`);
+      }
+    }
+  }
+
+  mainWindow?.webContents.send('chopsticks:workspaceFinal', { runtimeSessionId, metadata, retained, reason });
 }
 
 // --- session creation -----------------------------------------------------
@@ -326,12 +381,35 @@ function flushAgentEvents(): void {
  * `ports.write` bypasses the renderer-input path and writes straight to the
  * manager, so injected bytes are never mistaken for a human keystroke.
  */
-async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions): Promise<ClaudeSessionInfo> {
+async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> {
   const transport = hostTransport ?? (await transportReady);
-  const cwd = opts.cwd ?? repoRoot;
+
+  // Default (omitted) is the current behavior: a shared workspace on the repo
+  // root (honoring a legacy `cwd` override as the shared path).
+  const request: WorkspaceRequest = {
+    isolation: opts.workspace?.isolation ?? 'shared',
+    path: opts.workspace?.path ?? opts.cwd ?? repoRoot,
+  };
+
+  // §20.3 — one writer per shared root. A conflict (or a create failure) comes
+  // back to the renderer as a structured error rather than an opaque throw.
+  try {
+    assertWorkspacePolicy([...activeWorkspaces.values()], request);
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { error: { code: err.code, message: err.message } };
+    throw err;
+  }
+
+  let workspace: Workspace;
+  try {
+    workspace = await createWorkspace(request);
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { error: { code: err.code, message: err.message } };
+    throw err;
+  }
 
   const session = await createClaudeSession({
-    cwd,
+    cwd: workspace.root,
     title: opts.title,
     ports: {
       spawn: async (prepared) => {
@@ -354,8 +432,14 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
         manager.write(runtimeSessionId, Buffer.from(data, 'utf8'));
       },
     },
+  }).catch(async (err: unknown) => {
+    // The workspace exists but the session never started: don't leak a worktree.
+    // Nothing ran in it, so it is clean and a non-force destroy succeeds.
+    await workspace.destroy().catch(() => undefined);
+    throw err;
   });
 
+  activeWorkspaces.set(session.runtimeSessionId, workspace);
   claudeSessions.set(session.runtimeSessionId, session);
   session.onEvent((envelope: AgentEventEnvelope) => {
     agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
@@ -364,7 +448,18 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
 
   const info = manager.getSessionInfo(session.runtimeSessionId);
   if (!info) throw new Error(`claude session ${session.runtimeSessionId} not registered in manager`);
-  return { sessionId: session.sessionId, runtimeSessionId: session.runtimeSessionId, descriptor: infoToDescriptor(info) };
+  const workspaceInfo: WorkspaceInfo = {
+    isolation: workspace.isolation,
+    root: workspace.root,
+    branch: workspace.branch,
+    initialCommit: workspace.initialCommit,
+  };
+  return {
+    sessionId: session.sessionId,
+    runtimeSessionId: session.runtimeSessionId,
+    descriptor: infoToDescriptor(info),
+    workspace: workspaceInfo,
+  };
 }
 
 function registerIpc(): void {
@@ -372,6 +467,10 @@ function registerIpc(): void {
   ipcMain.handle('chopsticks:createClaudeSession', (_e, opts: CreateClaudeSessionOptions) =>
     createClaudeSessionForRenderer(opts ?? {}),
   );
+  ipcMain.handle('chopsticks:workspaceDiff', (_e, runtimeSessionId: string) => {
+    const workspace = activeWorkspaces.get(runtimeSessionId);
+    return workspace ? workspace.diff() : null;
+  });
   ipcMain.handle('chopsticks:submitPrompt', (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
     const claude = claudeSessions.get(opts.runtimeSessionId);
     if (!claude) return Promise.resolve({ status: 'rejected', reason: 'no such claude session' });
@@ -488,4 +587,32 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => disposeHub());
+/**
+ * Finalize every remaining workspace, best-effort. Same retained-on-dirty rule
+ * as the per-session exit path (worktrees are never force-destroyed), so a quit
+ * mid-work keeps the branch + worktree. allSettled so one failure never blocks
+ * the quit.
+ */
+async function finalizeAllWorkspaces(): Promise<void> {
+  const entries = [...activeWorkspaces.entries()];
+  activeWorkspaces.clear();
+  await Promise.allSettled(entries.map(([id, ws]) => finalizeWorkspace(id, ws)));
+}
+
+// Quit is made async once: tear down Claude sessions + the hub, THEN finalize the
+// workspaces (order matters — observation is gone before we snapshot the diff),
+// then re-enter quit, which the `quitting` guard lets through.
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting) return;
+  e.preventDefault();
+  quitting = true;
+  void (async () => {
+    try {
+      disposeHub();
+      await finalizeAllWorkspaces();
+    } finally {
+      app.quit();
+    }
+  })();
+});
