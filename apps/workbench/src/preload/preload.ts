@@ -8,12 +8,18 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  AgentEventMessage,
+  AgentStateMessage,
   ChopsticksBridge,
   ChunkEvent,
+  ClaudeSessionInfo,
+  CreateClaudeSessionOptions,
   CreateSessionOptions,
   ExitEvent,
+  PromptReceipt,
   ReplayResult,
   SessionDescriptor,
+  SubmitPromptOptions,
 } from '../protocol.js';
 
 const bridge: ChopsticksBridge = {
@@ -35,6 +41,20 @@ const bridge: ChopsticksBridge = {
     const listener = (_e: unknown, exit: ExitEvent): void => cb(exit);
     ipcRenderer.on('chopsticks:exit', listener);
     return () => ipcRenderer.removeListener('chopsticks:exit', listener);
+  },
+  createClaudeSession: (opts: CreateClaudeSessionOptions): Promise<ClaudeSessionInfo> =>
+    ipcRenderer.invoke('chopsticks:createClaudeSession', opts),
+  submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
+    ipcRenderer.invoke('chopsticks:submitPrompt', opts),
+  onAgentEvents: (cb: (events: AgentEventMessage[]) => void): (() => void) => {
+    const listener = (_e: unknown, events: AgentEventMessage[]): void => cb(events);
+    ipcRenderer.on('chopsticks:agentEvents', listener);
+    return () => ipcRenderer.removeListener('chopsticks:agentEvents', listener);
+  },
+  onAgentState: (cb: (state: AgentStateMessage) => void): (() => void) => {
+    const listener = (_e: unknown, state: AgentStateMessage): void => cb(state);
+    ipcRenderer.on('chopsticks:agentState', listener);
+    return () => ipcRenderer.removeListener('chopsticks:agentState', listener);
   },
 };
 

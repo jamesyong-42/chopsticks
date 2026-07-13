@@ -37,7 +37,20 @@ import {
   type IPTYIPCBridge,
   type UDSServer,
 } from '@vibecook/avocado-sdk/transport-ipc';
-import type { ChunkEvent, CreateSessionOptions, ExitEvent, SessionDescriptor } from '../protocol.js';
+import { createClaudeSession, type ClaudeSession } from '@vibecook/chopsticks-adapter-claude';
+import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
+import type {
+  AgentEventMessage,
+  ChunkEvent,
+  ClaudeSessionInfo,
+  CreateClaudeSessionOptions,
+  CreateSessionOptions,
+  ExitEvent,
+  PromptReceipt,
+  SerializedSessionState,
+  SessionDescriptor,
+  SubmitPromptOptions,
+} from '../protocol.js';
 
 // Bundled to CommonJS (dist/main.cjs), the conventional Electron main entry
 // format; __dirname / require are the Node-provided CommonJS globals.
@@ -46,10 +59,20 @@ declare const require: NodeRequire;
 
 const SMOKE = process.argv.includes('--smoke');
 const CHUNK_FLUSH_MS = 8;
+// One display frame: agent events/state coalesce to at most one push per frame,
+// so a burst of hooks can't flood the renderer with per-event IPC.
+const AGENT_FLUSH_MS = 16;
+// Initial geometry for a Claude PTY; the renderer resizes to the fitted tab as
+// soon as its pane has real dimensions (chopsticks:resize on the same id).
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
 
 // dist/ holds preload.cjs + index.html; appRoot (apps/workbench) is its parent.
 const dirname = __dirname;
 const appRoot = path.join(dirname, '..');
+// Default cwd for Claude sessions: the chopsticks repo root (apps/workbench →
+// two levels up). Documented default; the renderer may override per session.
+const repoRoot = path.resolve(appRoot, '..', '..');
 
 /** tsx CLI: run as `node <cli> <entry>` so the pty-host executes TS directly. */
 function resolveTsxCli(): string {
@@ -86,6 +109,15 @@ const transportReady = new Promise<IPCPTYTransport>((res) => {
 const hubEvents = new EventEmitter();
 let chunkBatch: ChunkEvent[] = [];
 let flushTimer: NodeJS.Timeout | undefined;
+
+// --- Claude session state -------------------------------------------------
+// The driver runs HERE, in Electron main (DESIGN §16): the pty-host stays
+// Claude-agnostic. Sessions are keyed by their runtimeSessionId — the same
+// namespaced manager id the terminal surface uses — so terminal I/O and agent
+// observation share one identity.
+const claudeSessions = new Map<string, ClaudeSession>();
+let agentEventBatch: AgentEventMessage[] = [];
+let agentFlushTimer: NodeJS.Timeout | undefined;
 
 // --- hub lifecycle --------------------------------------------------------
 
@@ -140,6 +172,10 @@ let hubDisposed = false;
 function disposeHub(): void {
   if (hubDisposed) return;
   hubDisposed = true;
+  // Tear down agent observation before the transport goes: each dispose() stops
+  // its hook bridge + transcript observer and cleans the generated settings file.
+  for (const claude of claudeSessions.values()) void claude.dispose().catch(() => undefined);
+  claudeSessions.clear();
   ptyHost?.kill('SIGTERM');
   ptyHost = undefined;
   bridge.dispose();
@@ -181,6 +217,13 @@ function forwardExit(exit: ExitEvent): void {
   hubEvents.emit('exit', exit);
   flushChunks();
   mainWindow?.webContents.send('chopsticks:exit', exit);
+  // A Claude session's PTY just ended: tear down observation (bridge + observer)
+  // and drop it. The process is already gone, so this is observation cleanup only.
+  const claude = claudeSessions.get(exit.sessionId);
+  if (claude) {
+    claudeSessions.delete(exit.sessionId);
+    void claude.dispose().catch(() => undefined);
+  }
 }
 
 // --- session creation -----------------------------------------------------
@@ -222,9 +265,122 @@ async function createSession(opts: CreateSessionOptions): Promise<SessionDescrip
   return infoToDescriptor(info);
 }
 
+// --- Claude session creation ----------------------------------------------
+
+/**
+ * Flatten SessionRuntimeState for the wire: structured clone can carry a Map,
+ * but the preload's typed surface models these as arrays, so collapse them to
+ * arrays of values here rather than leak Map through the renderer contract.
+ */
+function serializeState(state: SessionRuntimeState): SerializedSessionState {
+  return {
+    lifecycle: state.lifecycle,
+    activeTurn: state.activeTurn,
+    tools: [...state.tools.values()],
+    permissions: [...state.permissions.values()],
+    subagents: [...state.subagents.values()],
+    tasks: [...state.tasks.values()],
+    lastAssistantMessage: state.lastAssistantMessage,
+    exit: state.exit,
+    counters: state.counters,
+    lastSequence: state.lastSequence,
+    diagnostics: state.diagnostics,
+  };
+}
+
+function scheduleAgentFlush(): void {
+  if (agentFlushTimer) return;
+  agentFlushTimer = setTimeout(flushAgentEvents, AGENT_FLUSH_MS);
+}
+
+/**
+ * Push the coalesced envelope batch, then one fresh state snapshot per session
+ * that appeared in it. Events give the renderer the scrolling tail; the state
+ * push gives it the reduced view (lifecycle, tools, pending permissions).
+ */
+function flushAgentEvents(): void {
+  if (agentFlushTimer) {
+    clearTimeout(agentFlushTimer);
+    agentFlushTimer = undefined;
+  }
+  if (agentEventBatch.length === 0) return;
+  const batch = agentEventBatch;
+  agentEventBatch = [];
+  mainWindow?.webContents.send('chopsticks:agentEvents', batch);
+  const touched = new Set(batch.map((m) => m.runtimeSessionId));
+  for (const runtimeSessionId of touched) {
+    const claude = claudeSessions.get(runtimeSessionId);
+    if (!claude) continue;
+    mainWindow?.webContents.send('chopsticks:agentState', {
+      runtimeSessionId,
+      state: serializeState(claude.state()),
+      observationLevel: claude.observationLevel(),
+    });
+  }
+}
+
+/**
+ * Start a Claude session with the driver in main. `ports.spawn` routes the
+ * prepared command through the SAME avocado transport as every other session
+ * (so the terminal tab, output fan-out, and reload replay all work unchanged);
+ * `ports.write` bypasses the renderer-input path and writes straight to the
+ * manager, so injected bytes are never mistaken for a human keystroke.
+ */
+async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions): Promise<ClaudeSessionInfo> {
+  const transport = hostTransport ?? (await transportReady);
+  const cwd = opts.cwd ?? repoRoot;
+
+  const session = await createClaudeSession({
+    cwd,
+    title: opts.title,
+    ports: {
+      spawn: async (prepared) => {
+        // prepared.env carries CHOPSTICKS_HOOK_TOKEN; it rides the spawn request's
+        // env grants → pty-host buildAgentEnvironment allowlist → Claude's hooks.
+        const { sessionId: remoteId } = await transport.requestSpawn({
+          command: prepared.command,
+          args: prepared.args,
+          cwd: prepared.cwd,
+          env: prepared.env,
+          cols: DEFAULT_COLS,
+          rows: DEFAULT_ROWS,
+        });
+        // Announce precedes the ack, so the proxy session already exists here.
+        return { runtimeSessionId: createNamespacedId('ipc', transport.transportId, remoteId) };
+      },
+      write: (runtimeSessionId, data) => {
+        // DIRECT manager write — deliberately NOT the renderer 'chopsticks:write'
+        // path, so an injected paste never trips notifyUserInput (user priority).
+        manager.write(runtimeSessionId, Buffer.from(data, 'utf8'));
+      },
+    },
+  });
+
+  claudeSessions.set(session.runtimeSessionId, session);
+  session.onEvent((envelope: AgentEventEnvelope) => {
+    agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
+    scheduleAgentFlush();
+  });
+
+  const info = manager.getSessionInfo(session.runtimeSessionId);
+  if (!info) throw new Error(`claude session ${session.runtimeSessionId} not registered in manager`);
+  return { sessionId: session.sessionId, runtimeSessionId: session.runtimeSessionId, descriptor: infoToDescriptor(info) };
+}
+
 function registerIpc(): void {
   ipcMain.handle('chopsticks:createSession', (_e, opts: CreateSessionOptions) => createSession(opts));
+  ipcMain.handle('chopsticks:createClaudeSession', (_e, opts: CreateClaudeSessionOptions) =>
+    createClaudeSessionForRenderer(opts ?? {}),
+  );
+  ipcMain.handle('chopsticks:submitPrompt', (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
+    const claude = claudeSessions.get(opts.runtimeSessionId);
+    if (!claude) return Promise.resolve({ status: 'rejected', reason: 'no such claude session' });
+    return claude.submitPrompt({ text: opts.text });
+  });
   ipcMain.handle('chopsticks:write', (_e, sessionId: string, dataBase64: string) => {
+    // User priority (DESIGN §17.2): a real keystroke on a Claude terminal must
+    // resolve any in-flight injection as 'uncertain' BEFORE its bytes land.
+    claudeSessions.get(sessionId)?.notifyUserInput();
     manager.write(sessionId, Buffer.from(dataBase64, 'base64'));
   });
   ipcMain.handle('chopsticks:resize', (_e, sessionId: string, cols: number, rows: number) => {

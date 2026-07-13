@@ -11,8 +11,12 @@
     <div id="actions">
       <button id="new-shell" type="button">+ shell</button>
       <button id="new-fake-agent" type="button">+ fake agent</button>
+      <button id="new-claude" type="button">+ claude</button>
     </div>
   </header>
-  <main id="terminals"></main>
+  <main id="workarea">
+    <div id="terminals"></div>
+    <aside id="activity" class="hidden"></aside>
+  </main>
 </div>
 <script type="module" src="./renderer.js"></script>

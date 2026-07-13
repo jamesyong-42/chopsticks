@@ -17,11 +17,17 @@ await mkdir(dist, { recursive: true });
 
 await Promise.all([
   // Electron main: CommonJS (the conventional Electron main entry format).
-  // @vibecook/avocado-sdk is ESM-only; Electron 32's Node (20.18) cannot
-  // require() an ES module, so bundle it in rather than leaving it external.
+  // @vibecook/avocado-sdk AND @vibecook/chopsticks-adapter-claude (+ its dep
+  // @vibecook/spaghetti-sdk) are ESM; Electron 32's Node (20.18) cannot
+  // require() an ES module, so bundle them in rather than leaving them external.
   // electron/tsx are resolved at runtime; node-pty is never loaded here (the
   // pty-host owns all PTYs) so it stays external to avoid pulling the native
-  // module into the Electron main bundle.
+  // module into the Electron main bundle. @parcel/watcher (spaghetti-sdk's
+  // transitive native dep) is N-API — ABI-stable and loads fine in Electron —
+  // but must stay external so esbuild doesn't try to inline its .node binary.
+  // It is also declared as a direct workbench dependency so the emitted
+  // `require('@parcel/watcher')` resolves from apps/workbench/node_modules under
+  // pnpm's strict, non-hoisted layout.
   build({
     ...shared,
     entryPoints: [join(root, 'src/main/main.ts')],
@@ -29,7 +35,7 @@ await Promise.all([
     platform: 'node',
     format: 'cjs',
     target: 'node20',
-    external: ['electron', 'tsx', 'node-pty'],
+    external: ['electron', 'tsx', 'node-pty', '@parcel/watcher'],
   }),
   // Preload must be CommonJS under sandbox: true; only electron is external.
   build({

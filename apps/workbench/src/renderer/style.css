@@ -100,10 +100,19 @@ body {
   border-color: var(--accent);
 }
 
-#terminals {
-  position: relative;
+/* Work area: terminals fill the row; the activity panel is an auto column that
+   collapses to zero width when hidden (plain terminals get the full width). */
+#workarea {
   flex: 1;
   min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+}
+
+#terminals {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
 }
 
 .term-pane {
@@ -119,4 +128,245 @@ body {
 
 .xterm {
   height: 100%;
+}
+
+#new-claude {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* --- Claude activity panel ------------------------------------------------ */
+
+#activity {
+  width: 360px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+#activity.hidden {
+  display: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-header .badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(137, 180, 250, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.panel-header .badge[data-lifecycle='exited'],
+.panel-header .badge[data-lifecycle='failed'] {
+  background: rgba(243, 139, 168, 0.18);
+  color: #f38ba8;
+}
+
+.panel-header .badge[data-lifecycle='running'] {
+  background: rgba(166, 227, 161, 0.18);
+  color: #a6e3a1;
+}
+
+.panel-header .obs {
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.panel-turn {
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
+}
+
+.panel-turn.active {
+  color: var(--text);
+}
+
+.panel-section h4 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.panel-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.panel-section li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.panel-section li.empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.tools .tool-name {
+  color: var(--accent);
+}
+
+.tools .tool-state {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.tools .tool-input {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pending permissions: the "needs attention" signal — highlighted when present. */
+.perms-section.active {
+  border: 1px solid #f9e2af;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(249, 226, 175, 0.08);
+}
+
+.perms-section.active h4 {
+  color: #f9e2af;
+}
+
+.perms .perm-name {
+  color: #f9e2af;
+  font-weight: 600;
+}
+
+.assistant-msg {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.assistant-msg.expandable {
+  cursor: pointer;
+}
+
+.event-tail {
+  max-height: 220px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.event-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.event-row .ev-seq {
+  color: var(--text-dim);
+}
+
+.event-row .ev-type {
+  color: var(--accent);
+}
+
+.event-row .ev-source {
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+.event-row .ev-summary {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-inject {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.inject-input {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.inject-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.inject-send {
+  align-self: flex-end;
+  padding: 4px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inject-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.inject-receipt {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  min-height: 1em;
+}
+
+.inject-receipt.pending {
+  color: var(--text-dim);
+}
+
+.inject-receipt.confirmed {
+  color: #a6e3a1;
+}
+
+.inject-receipt.rejected {
+  color: #f38ba8;
+}
+
+.inject-receipt.uncertain {
+  color: #f9e2af;
 }

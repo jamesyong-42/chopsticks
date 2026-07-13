@@ -14,7 +14,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@parcel/watcher": "^2.5.0",
     "@vibecook/avocado-sdk": "^0.2.2",
+    "@vibecook/chopsticks-adapter-claude": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*",
     "@vibecook/chopsticks-node": "workspace:*",
     "@vibecook/chopsticks-testing": "workspace:*",

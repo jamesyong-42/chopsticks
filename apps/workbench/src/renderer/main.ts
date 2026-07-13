@@ -12,7 +12,16 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './style.css';
-import type { ChunkEvent, CreateSessionOptions, ExitEvent, SessionDescriptor } from '../protocol.js';
+import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
+import type {
+  AgentEventMessage,
+  AgentStateMessage,
+  ChunkEvent,
+  CreateSessionOptions,
+  ExitEvent,
+  SessionDescriptor,
+} from '../protocol.js';
+import { ClaudePanel } from './claude-panel.js';
 
 const chopsticks = window.chopsticks;
 const enc = new TextEncoder();
@@ -45,6 +54,8 @@ class TerminalTab {
   /** False until history has been restored, so live chunks buffer first. */
   ready = false;
   exited = false;
+  /** Claude tabs get the activity panel; plain terminals do not. */
+  isClaude = false;
 
   constructor(
     public sessionId: string,
@@ -127,21 +138,30 @@ class TerminalTab {
   }
 }
 
+const EVENT_TAIL_MAX = 50;
+
 class Workbench {
   private readonly tabs = new Map<string, TerminalTab>();
   /** Chunks that arrived before their tab was registered/ready. */
   private readonly pending = new Map<string, ChunkEvent[]>();
+  /** Latest serialized reducer snapshot per Claude session (runtimeSessionId). */
+  private readonly claudeState = new Map<string, AgentStateMessage>();
+  /** Bounded event tail per Claude session (runtimeSessionId). */
+  private readonly claudeEvents = new Map<string, AgentEventEnvelope[]>();
   private activeId: string | undefined;
 
   constructor(
     private readonly tabsEl: HTMLElement,
     private readonly panesEl: HTMLElement,
+    private readonly panel: ClaudePanel,
   ) {
     chopsticks.onChunk((chunks) => this.onChunks(chunks));
     chopsticks.onExit((exit) => this.onExit(exit));
+    chopsticks.onAgentEvents((events) => this.onAgentEvents(events));
+    chopsticks.onAgentState((state) => this.onAgentState(state));
   }
 
-  private makeTab(sessionId: string, title: string): TerminalTab {
+  private makeTab(sessionId: string, title: string, isClaude = false): TerminalTab {
     const tab = new TerminalTab(
       sessionId,
       title,
@@ -150,10 +170,39 @@ class Workbench {
       (id) => this.activate(id),
       (id) => void this.close(id),
     );
+    tab.isClaude = isClaude;
     this.tabs.set(sessionId, tab);
     this.tabsEl.append(tab.button);
     this.panesEl.append(tab.pane);
     return tab;
+  }
+
+  private onAgentEvents(events: AgentEventMessage[]): void {
+    let touchedActive = false;
+    for (const { runtimeSessionId, envelope } of events) {
+      const buf = this.claudeEvents.get(runtimeSessionId) ?? [];
+      buf.push(envelope);
+      if (buf.length > EVENT_TAIL_MAX) buf.splice(0, buf.length - EVENT_TAIL_MAX);
+      this.claudeEvents.set(runtimeSessionId, buf);
+      if (runtimeSessionId === this.activeId) touchedActive = true;
+    }
+    if (touchedActive) this.refreshPanel();
+  }
+
+  private onAgentState(msg: AgentStateMessage): void {
+    this.claudeState.set(msg.runtimeSessionId, msg);
+    if (msg.runtimeSessionId === this.activeId) this.refreshPanel();
+  }
+
+  /** Show the panel for the active Claude tab, or hide it for a plain terminal. */
+  private refreshPanel(): void {
+    const id = this.activeId;
+    const tab = id ? this.tabs.get(id) : undefined;
+    if (id && tab?.isClaude) {
+      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? []);
+    } else {
+      this.panel.hide();
+    }
   }
 
   /** Mark a tab ready and drain any chunks that raced ahead of registration. */
@@ -200,6 +249,22 @@ class Workbench {
     this.flushPending(tab);
   }
 
+  /** Start a Claude session: the driver lives in main; this tab is its terminal + panel. */
+  async newClaudeSession(): Promise<void> {
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    const tab = this.makeTab(tempId, 'claude', true);
+    this.activateTab(tab);
+    tab.refit();
+    try {
+      const info = await chopsticks.createClaudeSession({});
+      this.rebind(tab, tempId, info.runtimeSessionId);
+      this.flushPending(tab);
+      this.refreshPanel();
+    } catch (err) {
+      tab.markExited(err instanceof Error ? err.message : 'spawn failed');
+    }
+  }
+
   /** Attach a tab created under a temporary id to its real session id. */
   private rebind(tab: TerminalTab, tempId: string, sessionId: string): void {
     this.tabs.delete(tempId);
@@ -234,6 +299,7 @@ class Workbench {
     for (const [id, other] of this.tabs) other.setActive(id === tab.sessionId);
     tab.setActive(true);
     this.activeId = tab.sessionId;
+    this.refreshPanel();
   }
 
   private async close(sessionId: string): Promise<void> {
@@ -242,10 +308,13 @@ class Workbench {
     if (!tab.exited) await chopsticks.terminate(sessionId).catch(() => undefined);
     tab.dispose();
     this.tabs.delete(sessionId);
+    this.claudeState.delete(sessionId);
+    this.claudeEvents.delete(sessionId);
     if (this.activeId === sessionId) {
       this.activeId = undefined;
       const next = this.tabs.keys().next();
       if (!next.done) this.activate(next.value);
+      else this.refreshPanel();
     }
   }
 }
@@ -257,14 +326,19 @@ function basename(p: string): string {
 
 const tabsEl = document.getElementById('tabs');
 const panesEl = document.getElementById('terminals');
-if (!tabsEl || !panesEl) throw new Error('workbench DOM not found');
+const activityEl = document.getElementById('activity');
+if (!tabsEl || !panesEl || !activityEl) throw new Error('workbench DOM not found');
 
-const workbench = new Workbench(tabsEl, panesEl);
+const panel = new ClaudePanel(activityEl, (runtimeSessionId, text) =>
+  chopsticks.submitPrompt({ runtimeSessionId, text }),
+);
+const workbench = new Workbench(tabsEl, panesEl, panel);
 document
   .getElementById('new-shell')
   ?.addEventListener('click', () => void workbench.newSession({ kind: 'shell' }, 'shell'));
 document
   .getElementById('new-fake-agent')
   ?.addEventListener('click', () => void workbench.newSession({ kind: 'fake-agent' }, 'fake agent'));
+document.getElementById('new-claude')?.addEventListener('click', () => void workbench.newClaudeSession());
 
 void workbench.restore();
