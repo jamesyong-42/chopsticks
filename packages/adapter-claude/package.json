@@ -27,7 +27,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vibecook/chopsticks-core": "workspace:*"
+    "@vibecook/chopsticks-core": "workspace:*",
+    "@vibecook/spaghetti-sdk": "^0.5.16"
   },
   "devDependencies": {
     "@vibecook/chopsticks-testing": "workspace:*"
