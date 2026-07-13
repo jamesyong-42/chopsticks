@@ -17,6 +17,7 @@ import type {
   AgentEventMessage,
   AgentStateMessage,
   ChunkEvent,
+  CreateClaudeSessionOptions,
   CreateSessionOptions,
   ExitEvent,
   SessionDescriptor,
@@ -151,6 +152,8 @@ class Workbench {
   private readonly claudeEvents = new Map<string, AgentEventEnvelope[]>();
   /** Workspace view per Claude session: initial info, live diff, final record. */
   private readonly claudeWorkspace = new Map<string, WorkspacePanelData>();
+  /** The Claude `--session-id` UUID per Claude session (runtimeSessionId → sessionId), for resume. */
+  private readonly claudeSessionId = new Map<string, string>();
   /** Slow-poll timers refreshing the live diff, keyed by runtimeSessionId. */
   private readonly diffPollers = new Map<string, ReturnType<typeof setInterval>>();
   private activeId: string | undefined;
@@ -244,7 +247,13 @@ class Workbench {
     const id = this.activeId;
     const tab = id ? this.tabs.get(id) : undefined;
     if (id && tab?.isClaude) {
-      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], this.claudeWorkspace.get(id));
+      this.panel.render(
+        id,
+        this.claudeState.get(id),
+        this.claudeEvents.get(id) ?? [],
+        this.claudeWorkspace.get(id),
+        tab.exited,
+      );
     } else {
       this.panel.hide();
     }
@@ -279,6 +288,9 @@ class Workbench {
     this.tabs.get(exit.sessionId)?.markExited(exit.reason);
     // Stop polling now; the workspaceFinal push replaces the live diff shortly.
     this.stopDiffPoll(exit.sessionId);
+    // Reflect the exit in the panel now (offer Resume) without waiting on the
+    // asynchronous workspaceFinal push, which may lag or be skipped on failure.
+    if (exit.sessionId === this.activeId) this.refreshPanel();
   }
 
   async newSession(opts: Omit<CreateSessionOptions, 'cols' | 'rows'>, title: string): Promise<void> {
@@ -298,19 +310,55 @@ class Workbench {
 
   /** Start a Claude session: the driver lives in main; this tab is its terminal + panel. */
   async newClaudeSession(isolation: 'shared' | 'worktree'): Promise<void> {
+    await this.startClaude({ workspace: { isolation } }, isolation === 'worktree' ? 'claude ⑂' : 'claude');
+  }
+
+  /**
+   * Resume an EXITED Claude tab as a NEW tab that keeps the same Claude session +
+   * transcript (`--resume`). Resume always reuses the original directory as a
+   * SHARED workspace — main never re-materializes a worktree. For a worktree
+   * session that directory survives only if it was RETAINED (dirty at finalize);
+   * a destroyed worktree is gone, so we fall back to a shared repo-root session
+   * (main defaults the path when omitted) and surface a note in the panel.
+   */
+  async resumeClaude(runtimeSessionId: string): Promise<void> {
+    const sessionId = this.claudeSessionId.get(runtimeSessionId);
+    const data = this.claudeWorkspace.get(runtimeSessionId);
+    if (!sessionId || !data) return;
+    const { info, final } = data;
+
+    let workspace: { isolation: 'shared'; path?: string };
+    let note: string | undefined;
+    if (info.isolation === 'worktree') {
+      if (final?.retained) {
+        workspace = { isolation: 'shared', path: info.root };
+      } else {
+        workspace = { isolation: 'shared' }; // main defaults to the repo root
+        note = 'worktree gone — resumed on repo root';
+      }
+    } else {
+      workspace = { isolation: 'shared', path: info.root };
+    }
+
+    await this.startClaude({ resume: sessionId, workspace }, 'claude ⟲', note);
+  }
+
+  /** Shared spawn+wire path for a new or resumed Claude session. */
+  private async startClaude(opts: CreateClaudeSessionOptions, title: string, note?: string): Promise<void> {
     const tempId = `pending-${Math.random().toString(36).slice(2)}`;
-    const tab = this.makeTab(tempId, isolation === 'worktree' ? 'claude ⑂' : 'claude', true);
+    const tab = this.makeTab(tempId, title, true);
     this.activateTab(tab);
     tab.refit();
     try {
-      const result = await chopsticks.createClaudeSession({ workspace: { isolation } });
+      const result = await chopsticks.createClaudeSession(opts);
       // A workspace policy conflict / create failure comes back structured, not thrown.
       if ('error' in result) {
         tab.markExited(`${result.error.code}: ${result.error.message}`);
         return;
       }
       this.rebind(tab, tempId, result.runtimeSessionId);
-      this.claudeWorkspace.set(result.runtimeSessionId, { info: result.workspace });
+      this.claudeWorkspace.set(result.runtimeSessionId, { info: result.workspace, note });
+      this.claudeSessionId.set(result.runtimeSessionId, result.sessionId);
       this.startDiffPoll(result.runtimeSessionId);
       this.flushPending(tab);
       this.refreshPanel();
@@ -365,6 +413,7 @@ class Workbench {
     this.claudeState.delete(sessionId);
     this.claudeEvents.delete(sessionId);
     this.claudeWorkspace.delete(sessionId);
+    this.claudeSessionId.delete(sessionId);
     this.stopDiffPoll(sessionId);
     if (this.activeId === sessionId) {
       this.activeId = undefined;
@@ -385,10 +434,13 @@ const panesEl = document.getElementById('terminals');
 const activityEl = document.getElementById('activity');
 if (!tabsEl || !panesEl || !activityEl) throw new Error('workbench DOM not found');
 
-const panel = new ClaudePanel(activityEl, (runtimeSessionId, text) =>
-  chopsticks.submitPrompt({ runtimeSessionId, text }),
+let workbench: Workbench;
+const panel = new ClaudePanel(
+  activityEl,
+  (runtimeSessionId, text) => chopsticks.submitPrompt({ runtimeSessionId, text }),
+  (runtimeSessionId) => void workbench.resumeClaude(runtimeSessionId),
 );
-const workbench = new Workbench(tabsEl, panesEl, panel);
+workbench = new Workbench(tabsEl, panesEl, panel);
 document
   .getElementById('new-shell')
   ?.addEventListener('click', () => void workbench.newSession({ kind: 'shell' }, 'shell'));

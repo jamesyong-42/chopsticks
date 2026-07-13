@@ -94,6 +94,14 @@ export interface CreateClaudeSessionOptions {
    * `cwd` (then the repo root) main-side.
    */
   workspace?: { isolation: 'shared' | 'worktree'; path?: string };
+  /**
+   * Resume an existing Claude session by its `--session-id` UUID (native
+   * `--resume`; the session keeps its transcript and id). The resumed session is
+   * a NEW runtime tab but the SAME Claude session. The renderer reuses the
+   * original session's directory as a SHARED workspace on resume rather than
+   * materializing a fresh worktree — see the resume path in renderer/main.ts.
+   */
+  resume?: string;
 }
 
 /** The workspace a Claude session is running in, as the renderer first sees it. */

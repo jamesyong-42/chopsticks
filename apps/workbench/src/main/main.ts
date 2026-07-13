@@ -38,6 +38,7 @@ import {
   type UDSServer,
 } from '@vibecook/avocado-sdk/transport-ipc';
 import { createClaudeSession, type ClaudeSession } from '@vibecook/chopsticks-adapter-claude';
+import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-record';
 import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
 import {
   assertWorkspacePolicy,
@@ -124,10 +125,27 @@ let flushTimer: NodeJS.Timeout | undefined;
 // namespaced manager id the terminal surface uses — so terminal I/O and agent
 // observation share one identity.
 const claudeSessions = new Map<string, ClaudeSession>();
+// The Claude `--session-id` UUID (the own-action record's join key) keyed by
+// runtimeSessionId. Kept ALONGSIDE claudeSessions but OUTLIVES it: both the exit
+// path (forwardExit) and the quit path (disposeHub → finalizeAllWorkspaces)
+// dispose/clear the ClaudeSession before finalizeWorkspace records the
+// workspace-final, so the join key is preserved here to stamp that record. An
+// entry is removed once its workspace-final is written (or process exit).
+const claudeSessionIds = new Map<string, string>();
 // The workspace each Claude session runs in, keyed by the SAME runtimeSessionId.
 // A shared workspace's destroy() is a no-op by contract; only worktrees are torn
 // down on exit, and never forcibly when dirty (uncommitted work is kept).
 const activeWorkspaces = new Map<string, Workspace>();
+
+// Own-action record (DESIGN §22.1): the append-only JSONL log of what the runtime
+// itself did — injections, workspace finals, exit classifications, policy
+// conflicts. One module-level recorder, default ~/.chopsticks/own-actions.jsonl.
+// record() is internally serialized and error-safe; every call site fires it
+// and forgets (`void`) so recording can never block or break the operation being
+// recorded. A write failure surfaces on onError, never in the caller's hot path.
+const recorder: ActionRecorder = createActionRecorder({
+  onError: (err) => process.stderr.write(`[main] own-action record failed: ${err.message}\n`),
+});
 let agentEventBatch: AgentEventMessage[] = [];
 let agentFlushTimer: NodeJS.Timeout | undefined;
 
@@ -233,6 +251,17 @@ function forwardExit(exit: ExitEvent): void {
   // and drop it. The process is already gone, so this is observation cleanup only.
   const claude = claudeSessions.get(exit.sessionId);
   if (claude) {
+    // Record the exit classification BEFORE disposing — dispose() drops our handle
+    // to the session whose sessionId is the record's join key. Only Claude sessions
+    // get a session-exit record; plain shells/fake-agents have no `claude` here.
+    void recorder.record({
+      type: 'session-exit',
+      sessionId: claude.sessionId,
+      runtimeSessionId: exit.sessionId,
+      exitCode: exit.exitCode,
+      signal: exit.signal,
+      reason: exit.reason,
+    });
     claudeSessions.delete(exit.sessionId);
     void claude.dispose().catch(() => undefined);
   }
@@ -276,6 +305,28 @@ async function finalizeWorkspace(runtimeSessionId: string, workspace: Workspace)
         process.stderr.write(`[main] workspace destroy failed (${runtimeSessionId}): ${(err as Error).message}\n`);
       }
     }
+  }
+
+  // Record the workspace-final own-action. sessionId is REQUIRED in OwnActionBase
+  // and only a Claude session has one, so we stamp the record with the preserved
+  // Claude sessionId for this runtimeSessionId. In this workbench every workspace
+  // is a Claude session's workspace, but should a non-Claude/workspace-only session
+  // ever reach here it has no sessionId to join on — we skip its record rather than
+  // fabricate a runtime id in the join field. The map entry is consumed here.
+  const sessionId = claudeSessionIds.get(runtimeSessionId);
+  claudeSessionIds.delete(runtimeSessionId);
+  if (sessionId) {
+    void recorder.record({
+      type: 'workspace-final',
+      sessionId,
+      runtimeSessionId,
+      isolation: workspace.isolation,
+      branch: workspace.branch,
+      initialCommit: workspace.initialCommit,
+      finalCommit: metadata.finalCommit,
+      filesTouched: metadata.filesTouched,
+      retained,
+    });
   }
 
   mainWindow?.webContents.send('chopsticks:workspaceFinal', { runtimeSessionId, metadata, retained, reason });
@@ -396,7 +447,19 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
   try {
     assertWorkspacePolicy([...activeWorkspaces.values()], request);
   } catch (err) {
-    if (err instanceof WorkspaceError) return { error: { code: err.code, message: err.message } };
+    if (err instanceof WorkspaceError) {
+      // A policy refusal: the session never started, so there is no Claude
+      // sessionId yet. OwnActionBase requires a join key, so we stamp a synthetic
+      // `pending:<requested cwd>` marker — the refusal is about that root, and it
+      // is trivially distinguished from a real UUID by the prefix.
+      void recorder.record({
+        type: 'policy-conflict',
+        sessionId: `pending:${request.path}`,
+        code: err.code,
+        message: err.message,
+      });
+      return { error: { code: err.code, message: err.message } };
+    }
     throw err;
   }
 
@@ -411,6 +474,11 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
   const session = await createClaudeSession({
     cwd: workspace.root,
     title: opts.title,
+    // Native resume: the driver keeps the session's id + transcript when this is
+    // set. cwd is the reconstructed workspace root (a SHARED workspace over the
+    // original directory — the renderer never asks main to re-materialize a
+    // worktree on resume), so a resumed session reuses the existing directory.
+    resume: opts.resume,
     ports: {
       spawn: async (prepared) => {
         // prepared.env carries CHOPSTICKS_HOOK_TOKEN; it rides the spawn request's
@@ -441,6 +509,9 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
 
   activeWorkspaces.set(session.runtimeSessionId, workspace);
   claudeSessions.set(session.runtimeSessionId, session);
+  // Preserve the join key so the exit/quit paths can stamp the workspace-final
+  // record after the ClaudeSession itself is disposed.
+  claudeSessionIds.set(session.runtimeSessionId, session.sessionId);
   session.onEvent((envelope: AgentEventEnvelope) => {
     agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
     scheduleAgentFlush();
@@ -471,10 +542,24 @@ function registerIpc(): void {
     const workspace = activeWorkspaces.get(runtimeSessionId);
     return workspace ? workspace.diff() : null;
   });
-  ipcMain.handle('chopsticks:submitPrompt', (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
+  ipcMain.handle('chopsticks:submitPrompt', async (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
     const claude = claudeSessions.get(opts.runtimeSessionId);
-    if (!claude) return Promise.resolve({ status: 'rejected', reason: 'no such claude session' });
-    return claude.submitPrompt({ text: opts.text });
+    // No session → nothing was injected and there is no sessionId to join on, so
+    // there is no own-action to record; the synthetic rejection just informs the UI.
+    if (!claude) return { status: 'rejected', reason: 'no such claude session' };
+    const receipt = await claude.submitPrompt({ text: opts.text });
+    // Record the honest injection receipt (DESIGN §17): `uncertain` rides through as
+    // itself, never collapsed. reason/turnId live on distinct arms of the receipt union.
+    void recorder.record({
+      type: 'injection',
+      sessionId: claude.sessionId,
+      runtimeSessionId: opts.runtimeSessionId,
+      text: opts.text,
+      outcome: receipt.status,
+      reason: 'reason' in receipt ? receipt.reason : undefined,
+      turnId: 'turnId' in receipt ? receipt.turnId : undefined,
+    });
+    return receipt;
   });
   ipcMain.handle('chopsticks:write', (_e, sessionId: string, dataBase64: string) => {
     // User priority (DESIGN §17.2): a real keystroke on a Claude terminal must

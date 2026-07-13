@@ -26,6 +26,7 @@ const ASSISTANT_TRUNCATE = 280;
 const WS_FILES_MAX = 12;
 
 type SubmitFn = (runtimeSessionId: string, text: string) => Promise<PromptReceipt>;
+type ResumeFn = (runtimeSessionId: string) => void;
 
 /**
  * The renderer's view of one session's workspace: the info known at creation, the
@@ -36,6 +37,8 @@ export interface WorkspacePanelData {
   info: WorkspaceInfo;
   diff?: WorkspaceDiff;
   final?: WorkspaceFinalEvent;
+  /** Set on a resumed session that had to fall back (e.g. its worktree was gone). */
+  note?: string;
 }
 
 /** Trim + collapse whitespace for a compact one-liner in the event tail. */
@@ -113,6 +116,7 @@ export class ClaudePanel {
   // Fixed skeleton nodes, built once, updated in place.
   private readonly badge: HTMLSpanElement;
   private readonly obs: HTMLSpanElement;
+  private readonly resumeBtn: HTMLButtonElement;
   private readonly turnLine: HTMLDivElement;
   // Workspace section.
   private readonly wsSection: HTMLElement;
@@ -120,6 +124,7 @@ export class ClaudePanel {
   private readonly wsBranch: HTMLSpanElement;
   private readonly wsRoot: HTMLDivElement;
   private readonly wsCommit: HTMLDivElement;
+  private readonly wsNote: HTMLDivElement;
   private readonly wsRetained: HTMLDivElement;
   private readonly wsFilesHeading: HTMLHeadingElement;
   private readonly wsFiles: HTMLUListElement;
@@ -139,13 +144,22 @@ export class ClaudePanel {
   constructor(
     private readonly root: HTMLElement,
     private readonly onSubmit: SubmitFn,
+    private readonly onResume: ResumeFn,
   ) {
     root.classList.add('activity');
 
     const header = el('div', 'panel-header');
     this.badge = el('span', 'badge');
     this.obs = el('span', 'obs');
-    header.append(this.badge, this.obs);
+    // Resume: shown only on an exited Claude tab. Click reconstructs the spawn
+    // (new tab, same Claude session + transcript) via the workbench's onResume.
+    this.resumeBtn = el('button', 'resume-btn', '⟲ Resume');
+    this.resumeBtn.type = 'button';
+    this.resumeBtn.classList.add('hidden');
+    this.resumeBtn.addEventListener('click', () => {
+      if (this.shownSessionId) this.onResume(this.shownSessionId);
+    });
+    header.append(this.badge, this.obs, this.resumeBtn);
 
     this.turnLine = el('div', 'panel-turn');
 
@@ -159,10 +173,11 @@ export class ClaudePanel {
     wsHeader.append(this.wsBadge, this.wsBranch);
     this.wsRoot = el('div', 'ws-root');
     this.wsCommit = el('div', 'ws-commit');
+    this.wsNote = el('div', 'ws-note');
     this.wsRetained = el('div', 'ws-retained');
     this.wsFilesHeading = el('h5', 'ws-files-heading', 'Files touched');
     this.wsFiles = el('ul', 'ws-files');
-    this.wsSection.append(wsHeader, this.wsRoot, this.wsCommit, this.wsRetained, this.wsFilesHeading, this.wsFiles);
+    this.wsSection.append(wsHeader, this.wsRoot, this.wsCommit, this.wsNote, this.wsRetained, this.wsFilesHeading, this.wsFiles);
 
     const toolsSection = el('section', 'panel-section');
     toolsSection.append(el('h4', undefined, 'In-flight tools'));
@@ -226,6 +241,7 @@ export class ClaudePanel {
     msg: AgentStateMessage | undefined,
     events: AgentEventEnvelope[],
     workspace: WorkspacePanelData | undefined,
+    exited: boolean,
   ): void {
     if (runtimeSessionId !== this.shownSessionId) {
       this.shownSessionId = runtimeSessionId;
@@ -233,6 +249,8 @@ export class ClaudePanel {
       this.resetInject();
     }
     this.root.classList.remove('hidden');
+    // Resume is offered exactly on an exited Claude tab; a live tab hides it.
+    this.resumeBtn.classList.toggle('hidden', !exited);
     this.renderState(msg);
     this.renderWorkspace(workspace);
     this.renderEvents(events);
@@ -260,6 +278,11 @@ export class ClaudePanel {
     const commit = final?.metadata.finalCommit ?? info.initialCommit;
     this.wsCommit.textContent = commit ? `${final ? 'final' : 'base'} ${commit.slice(0, 8)}` : '';
     this.wsCommit.classList.toggle('hidden', !commit);
+
+    // Resume-fallback note (e.g. the original worktree was gone, so this resumed
+    // session runs on the repo root instead).
+    this.wsNote.textContent = data.note ?? '';
+    this.wsNote.classList.toggle('hidden', !data.note);
 
     // Retained-worktree notice: highlighted, only when a dirty worktree was kept.
     const retained = final?.retained ?? false;

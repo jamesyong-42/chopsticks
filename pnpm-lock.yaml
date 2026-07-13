@@ -38,6 +38,9 @@ importers:
       '@vibecook/chopsticks-node':
         specifier: workspace:*
         version: link:../../packages/node
+      '@vibecook/chopsticks-record':
+        specifier: workspace:*
+        version: link:../../packages/record
       '@vibecook/chopsticks-testing':
         specifier: workspace:*
         version: link:../../packages/testing

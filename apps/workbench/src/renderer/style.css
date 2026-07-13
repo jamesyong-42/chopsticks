@@ -209,6 +209,21 @@ body {
   font-size: 10px;
 }
 
+.panel-header .resume-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.panel-header .resume-btn.hidden {
+  display: none;
+}
+
 .panel-turn {
   color: var(--text-dim);
   font-family: ui-monospace, monospace;
@@ -343,6 +358,21 @@ body {
 }
 
 /* Retained-worktree notice: the "your uncommitted work was kept" highlight. */
+.ws-note {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(137, 180, 250, 0.1);
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.ws-note.hidden {
+  display: none;
+}
+
 .ws-retained {
   margin-top: 6px;
   padding: 5px 8px;

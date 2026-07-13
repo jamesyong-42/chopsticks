@@ -19,6 +19,7 @@
     "@vibecook/chopsticks-adapter-claude": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*",
     "@vibecook/chopsticks-node": "workspace:*",
+    "@vibecook/chopsticks-record": "workspace:*",
     "@vibecook/chopsticks-testing": "workspace:*",
     "@vibecook/chopsticks-workspaces": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
