@@ -204,8 +204,8 @@ Amended:
 |---|---|---|
 | M3 | `workspaces/` package: worktree/copy isolation, final-diff metadata | You actually run ≥2 write-capable sessions on one repo |
 | M4 (rescoped 2026-07-13) | Own-action JSONL record + native `--resume` spawn path. The SQLite event store is REJECTED — hook events mirror transcripts, which Spaghetti already indexes (same invariant as spaghetti PR #60); renderer reconnection was delivered by the avocado proxy buffer (M1.5); byte-exact terminal recording stays an opt-in flag awaiting a real consumer | Anytime — both remaining items are thin |
-| M5 | Second adapter (Codex or Gemini) | Core abstractions stable for ≥ a few weeks of daily use |
-| M6 | Structured + ACP drivers | A concrete automation consumer exists |
+| M5 | **Codex adapter — structured driver over the `app-server` protocol** (see §14). C0 probe (2026-07-13) found Codex's native surface *is* a JSON-RPC structured protocol, so M5 **absorbs M6** for Codex. | C0 done; core will churn (union + observation tier) — do it before over-polishing the Claude-shaped core |
+| M6 | ~~Structured + ACP drivers~~ — **largely delivered by M5's Codex structured driver**; residual = a non-Codex ACP agent | A concrete automation consumer exists; the `StructuredDriver` seam from M5 is the reuse point |
 | — | Runtime daemon outside Electron main (§22.5 note) | Workbench restart pain becomes real; keep host behind an interface now so this stays a transport swap |
 
 ---
@@ -230,3 +230,47 @@ Amended:
 3. While captures accumulate: bootstrap the pnpm workspace (M0-1) copying spaghetti's configs.
 4. Write `HOOK-SURFACE-FINDINGS.md` from the census; land the go/no-go on HTTP hooks.
 5. Start M0-2 (core types) — by then the registry data tells you exactly which event names and fields are real.
+
+---
+
+## 14. Milestone 5 — Codex adapter (structured driver)
+
+**Status:** planned; C0 surface probe **done** 2026-07-13 → `draft/CODEX-SURFACE-FINDINGS.md`.
+**Why now (vs the "weeks of soak" gate):** the gate was a proxy for "don't abstract off one example." C0 changes the calculus — Codex's native surface is a *structured JSON-RPC protocol*, structurally unlike Claude's hook+transcript model, so it's the **right** second example to lift the core abstraction against (n=2), and it will **reshape** the core event union + observation tier. Doing it before over-polishing the Claude-shaped core is the cheaper order. Spaghetti's Codex `AgentSource` (data half) already shipped, so the data-plane join is in place.
+
+### 14.1 The decision (from C0)
+
+Two strategies exist; **Strategy B (app-server structured driver) is primary**, Strategy A (PTY+transcript, discovered-join) is kept only as a degraded fallback / native-TUI-only mode. See `CODEX-SURFACE-FINDINGS.md` §3. Net effect: **M5 absorbs M6** — Codex delivers the structured/ACP driver architecture; Gemini/ACP later reuse its `StructuredDriver` seam.
+
+### 14.2 Phase plan
+
+| PR | Contents | Notes |
+|---|---|---|
+| **C1** — app-server spike + codegen | `codex app-server generate-ts` → typed client in `packages/adapter-codex` (or shared `app-server-client`); stand up `app-server --listen unix://`, do `initialize` → `ThreadStart` → one `TurnStart`, capture the `ServerNotification` stream as fixtures. **Resolves the §6 live deferrals** — esp. thread-id ↔ rollout `session_id` ↔ spaghetti join, and native-TUI-via-`--remote` coexistence. | This is the go/no-go spike, analog of Claude Phase 0's HTTP-hook verdict |
+| **C2** — normalizer: `ServerNotification` → `AgentEvent` | Map the structured stream onto the core union + reducer. Where the union can't express item/turn/reasoning granularity, **extend it** — that's the abstraction earning its keep, not Claude-shape leaking. Fixture-tested against C1 captures. | |
+| **C3** — lift the abstraction into `core` (n=2) | With a hook+transcript adapter (Claude) **and** a structured driver (Codex), extract `AgentSession` / `AgentAdapter` / `ObservationLevel` into `core` (the files DESIGN §9–11 describe but that were never built — core currently exports only `AgentEventEnvelope`). Add `ObservationLevel: 'structured'` above `'native-hooks'`. Refactor `createClaudeSession` to implement the lifted interface, **zero behavior change** (existing adapter-claude tests are the safety net). | The "general interface + per-source impl" move, one layer up from spaghetti's `LifecycleOwner`/`LiveWatch` |
+| **C4** — structured control | Prompt injection via `TurnStart`/`ThreadInjectItems` with `clientUserMessageId` (deterministic confirmation — no `uncertain` receipt). Structured **approvals**: observe (and optionally answer) `ExecCommand`/`ApplyPatch`/`Permissions` approval `ServerRequests`. Injector abstraction gains a `structured` impl beside Claude's `guarded-paste` one. | Approvals have real request-ids — strictly better than Claude's absence-pattern denial |
+| **C5** — conformance suite | Build the DESIGN §26.2 adapter conformance suite in `testing` (**currently missing**) — adapter-agnostic assertions (spawn→observe→state→inject→resume→dispose, no orphans) run against **both** adapters over the fake agent. Locks the C3 interface; pays forward to Gemini/ACP. | |
+| **C6** — workbench: Codex peer tab | Host Codex beside Claude: native TUI via `codex --remote unix://<daemon>` attached to the same app-server the driver controls → structured observation **and** native terminal on one session. Panel reports `ObservationLevel: 'structured'`. | Runtime-side mirror of the spaghetti CLI's claude/codex tabs shipped 2026-07-13 |
+
+Rough effort at your cadence: C1 ~1–2 · C2 ~2 · C3 ~1–2 · C4 ~2 · C5 ~2 · C6 ~1–2. Codegen (C1) de-risks the bulk.
+
+### 14.3 Locked context (from C0, do not relitigate)
+
+| Decision | Basis |
+|---|---|
+| Codex primary adapter = **structured app-server driver**, not PTY+transcript | CODEX-SURFACE-FINDINGS §0/§3 |
+| Never use `codex exec` for native hosting (the `--print` analog) | §5 |
+| Session identity from `ThreadStartResponse`, **not** a dictated id (Codex has no `--session-id`) | §1 |
+| Injection is structured (`TurnStart` + `clientUserMessageId`); the guarded-paste injector is Claude-only | §1/§3 |
+| Approvals are first-class JSON-RPC `ServerRequest`s (observe + respond) | §1 |
+| The protocol is experimental/versioned — pin a regen (`generate-ts`), don't hand-write the client | §5 |
+
+### 14.4 Risks specific to Codex
+
+| Risk | Mitigation |
+|---|---|
+| app-server protocol is experimental, v1/v2 churns | Codegen from a pinned `generate-ts`; version-probe at detection; the normalizer isolates protocol drift to one file |
+| app-server lifecycle (daemon, pairing, token, socket) is more moving parts than a PTY | C1 spike owns exactly this; `remote-control pair`/bearer mirrors chopsticks' existing loopback+token discipline |
+| Native-TUI-via-`--remote` may conflict with protocol-side `TurnStart` (double-drive) | §6 deferral #3 verifies coexistence in C1 before C6 depends on it; fall back to structured-only or TUI-only if they don't compose |
+| Thread id ≠ rollout `session_id` would break the spaghetti join | §6 deferral #1 — the very first C1 assertion; if they differ, add an explicit id-map (still deterministic, just one hop) |

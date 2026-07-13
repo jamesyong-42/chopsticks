@@ -1,0 +1,154 @@
+{
+  "remoteControl/status/changed": {
+    "status": "disabled",
+    "serverName": "Jamess-MacBook-Pro-9.local",
+    "installationId": "33dd9f00-3399-4a62-8fe3-0dd23055b087",
+    "environmentId": null
+  },
+  "thread/started": {
+    "thread": {
+      "id": "019f5d86-423a-7083-ab79-2deb044599c1",
+      "extra": null,
+      "sessionId": "019f5d86-423a-7083-ab79-2deb044599c1",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "",
+      "ephemeral": false,
+      "historyMode": "legacy",
+      "modelProvider": "openai",
+      "createdAt": 1783980507,
+      "updatedAt": 1783980507,
+      "recencyAt": 1783980507,
+      "status": {
+        "type": "idle"
+      },
+      "path": "/Users/jamesyong/.codex/sessions/2026/07/13/rollout-2026-07-13T15-08-27-019f5d86-423a-7083-ab79-2deb044599c1.jsonl",
+      "cwd": "/private/tmp/claude-501/-Users-jamesyong-Projects-project100-p008-spaghetti/0cbc35e6-3c4b-4b58-8b3c-c6736b522a61/scratchpad/c1-cwd",
+      "cliVersion": "0.144.2",
+      "source": "vscode",
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": null,
+      "turns": []
+    }
+  },
+  "mcpServer/startupStatus/updated": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "name": "node_repl",
+    "status": "starting",
+    "error": null,
+    "failureReason": null
+  },
+  "thread/status/changed": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "status": {
+      "type": "active",
+      "activeFlags": []
+    }
+  },
+  "turn/started": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turn": {
+      "id": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1783980507,
+      "completedAt": null,
+      "durationMs": null
+    }
+  },
+  "item/started": {
+    "item": {
+      "type": "userMessage",
+      "id": "019f5d86-46ef-7db2-bde0-eac915e62d86",
+      "clientId": null,
+      "content": [
+        {
+          "type": "text",
+          "text": "Reply with exactly the single word: pong. Do not run any commands or use any tools.",
+          "text_elements": []
+        }
+      ]
+    },
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turnId": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+    "startedAtMs": 1783980508911
+  },
+  "item/completed": {
+    "item": {
+      "type": "userMessage",
+      "id": "019f5d86-46ef-7db2-bde0-eac915e62d86",
+      "clientId": null,
+      "content": [
+        {
+          "type": "text",
+          "text": "Reply with exactly the single word: pong. Do not run any commands or use any tools.",
+          "text_elements": []
+        }
+      ]
+    },
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turnId": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+    "completedAtMs": 1783980508911
+  },
+  "item/agentMessage/delta": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turnId": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+    "itemId": "msg_03ea82984e64b11a016a5561de1a4c8198a0861b2e87ca80af",
+    "delta": "pong"
+  },
+  "thread/tokenUsage/updated": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turnId": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+    "tokenUsage": {
+      "total": {
+        "totalTokens": 13505,
+        "inputTokens": 13500,
+        "cachedInputTokens": 9984,
+        "outputTokens": 5,
+        "reasoningOutputTokens": 0
+      },
+      "last": {
+        "totalTokens": 13505,
+        "inputTokens": 13500,
+        "cachedInputTokens": 9984,
+        "outputTokens": 5,
+        "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 258400
+    }
+  },
+  "account/rateLimits/updated": {
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "primary": {
+        "usedPercent": 14,
+        "windowDurationMins": 10080,
+        "resetsAt": 1784527702
+      },
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "planType": "plus",
+      "rateLimitReachedType": null
+    }
+  },
+  "turn/completed": {
+    "threadId": "019f5d86-423a-7083-ab79-2deb044599c1",
+    "turn": {
+      "id": "019f5d86-42e2-7a03-844c-0de529f5ae8d",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "completed",
+      "error": null,
+      "startedAt": 1783980507,
+      "completedAt": 1783980510,
+      "durationMs": 2480
+    }
+  }
+}
