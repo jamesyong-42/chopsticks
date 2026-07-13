@@ -13,3 +13,4 @@ export * from './settings.js';
 export * from './prepare.js';
 export * from './transcript-observer.js';
 export * from './prompt.js';
+export * from './driver.js';
