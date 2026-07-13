@@ -203,7 +203,7 @@ Amended:
 | Milestone | Work | Trigger to start |
 |---|---|---|
 | M3 | `workspaces/` package: worktree/copy isolation, final-diff metadata | You actually run ≥2 write-capable sessions on one repo |
-| M4 | SQLite operational store + binary terminal log + replay + diagnostics export | You actually need cross-restart replay |
+| M4 (rescoped 2026-07-13) | Own-action JSONL record + native `--resume` spawn path. The SQLite event store is REJECTED — hook events mirror transcripts, which Spaghetti already indexes (same invariant as spaghetti PR #60); renderer reconnection was delivered by the avocado proxy buffer (M1.5); byte-exact terminal recording stays an opt-in flag awaiting a real consumer | Anytime — both remaining items are thin |
 | M5 | Second adapter (Codex or Gemini) | Core abstractions stable for ≥ a few weeks of daily use |
 | M6 | Structured + ACP drivers | A concrete automation consumer exists |
 | — | Runtime daemon outside Electron main (§22.5 note) | Workbench restart pain becomes real; keep host behind an interface now so this stays a transport swap |

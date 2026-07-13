@@ -1581,22 +1581,19 @@ A zero process exit code does not necessarily mean a turn succeeded. Process exi
 
 This store is operational — replay, receipts, reconnection — not a search index. Browsing and search over agent history belong to Spaghetti (Section 2.1).
 
-Recommended initial implementation:
+**RESCOPED 2026-07-13.** The SQLite event store below is **rejected**, by the same invariant that removed runtime-event persistence from Spaghetti: hook events mirror transcript content, transcripts are the durable record, and Spaghetti indexes them — a hub-side event database would be a second write path duplicating truth that already exists on disk. What persistence remains is narrowed to:
 
-SQLite
-├── sessions
-├── normalized_events
-├── native_events
-├── workspace_snapshots
-├── prompt_submissions
-└── process_records
+1. **The own-action record** — the one class of data whose only emitter is this runtime: prompt-injection receipts, workspace finalize metadata (files touched, retained-dirty worktrees), exit classifications, policy conflicts. Appended as plain JSONL under `~/.chopsticks/`; if it ever deserves search, Spaghetti indexes it as one more file source (emitter-writes-a-file rule).
+2. **Byte-exact terminal recording** (§22.3) — the only data with no other source (`--resume` continues a conversation; it does not replay what the screen showed). Stays opt-in (§23.3 `persistent-raw`) until a real consumer exists.
+3. **Session resumption** is the agent's native capability, not ours: the runtime holds every session's `--session-id` UUID, so resume is spawn configuration (`claude --resume <uuid>` through the normal prepared-spawn path), not storage.
+
+~~SQLite: sessions / normalized_events / native_events / workspace_snapshots / prompt_submissions / process_records~~ — rejected (above).
+
 Filesystem
-├── terminal/
-│   └── <session-id>.bin
-├── snapshots/
-│   └── <session-id>/
-├── generated-settings/
-└── diagnostics/
+├── own-actions.jsonl        (receipts, workspace finals, exit classifications)
+├── terminal/<session-id>.bin  (OPT-IN raw recording, §23.3)
+├── generated-settings/        (already implemented; cleaned per session)
+└── diagnostics/               (on-demand export, §27.3)
 
 22.2 Session record
 
@@ -1639,9 +1636,7 @@ This supports:
 
 22.4 Normalized event log
 
-Normalized events are append-only.
-
-Corrections produce new events rather than mutating prior events:
+**Rejected with the event store (2026-07-13, see §22.1)** — normalized events are derivable from transcripts plus the own-action record; persisting the stream would duplicate durable truth. The append-only/correction discipline below stays the contract for the IN-MEMORY event stream and for the own-action JSONL:
 
 interface EventCorrection {
   type: "runtime.event-correction";
@@ -1652,7 +1647,7 @@ interface EventCorrection {
 
 22.5 Renderer reconnection
 
-Version 1 supports renderer restart recovery:
+**Delivered (M1.5):** the avocado hub proxy's output buffer restores the renderer on reload — no persistence layer involved. The protocol below is the shape it implements:
 
 1. Renderer requests session attachment.
 2. Main process returns current metadata.
@@ -2042,21 +2037,21 @@ Exit criteria:
 * Multiple Claude sessions can safely operate in separate worktrees.
 * Terminating a session removes its owned descendants.
 
-Milestone 4 — Persistence and recovery
+Milestone 4 — Persistence and recovery (RESCOPED 2026-07-13, see §22.1)
 
-Implement:
+The event store and native-event storage are rejected (they duplicate
+transcript truth that Spaghetti already indexes); renderer reconnection
+shipped with the avocado adoption (M1.5). What remains, both thin:
 
-* SQLite event store
-* Native-event storage
-* Binary terminal log
-* Renderer reconnection protocol
-* Diagnostics export
-* Redaction policies
+* Own-action JSONL record (injection receipts, workspace finals, exit
+  classifications, policy conflicts) under ~/.chopsticks/
+* Native resume as spawn configuration (`claude --resume <session-id>`
+  through the prepared-spawn path; a Resume affordance on exited sessions)
 
 Exit criteria:
 
-* Session history survives renderer restart.
-* Completed sessions can be replayed.
+* Chopsticks' own actions are on disk and attributable per session.
+* An exited session can be resumed into a new terminal tab.
 
 Milestone 5 — Second native adapter
 
