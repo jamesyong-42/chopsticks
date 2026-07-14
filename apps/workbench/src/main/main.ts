@@ -18,8 +18,7 @@
 
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
@@ -38,17 +37,11 @@ import {
   type IPTYIPCBridge,
   type UDSServer,
 } from '@vibecook/avocado-sdk/transport-ipc';
-import { createClaudeSession, type ClaudeSession } from '@vibecook/chopsticks-adapter-claude';
-import {
-  createCodexObserver,
-  spawnAppServer,
-  wsOverUnixTransport,
-  type AppServerHandle,
-  type CodexObserver,
-} from '@vibecook/chopsticks-adapter-codex';
-import { createAcpSession, type AcpSession } from '@vibecook/chopsticks-adapter-acp';
+import { createClaudeSession } from '@vibecook/chopsticks-adapter-claude';
+import { createCodexTuiSession } from '@vibecook/chopsticks-adapter-codex';
+import { createGrokBackend, type GrokBackend } from '@vibecook/chopsticks-adapter-acp';
 import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-record';
-import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
+import type { AgentEventEnvelope, AgentHost, AgentSession, SessionRuntimeState } from '@vibecook/chopsticks-core';
 import {
   assertWorkspacePolicy,
   createWorkspace,
@@ -137,9 +130,14 @@ let flushTimer: NodeJS.Timeout | undefined;
 // Claude-agnostic. Sessions are keyed by their runtimeSessionId — the same
 // namespaced manager id the terminal surface uses — so terminal I/O and agent
 // observation share one identity.
-const claudeSessions = new Map<string, ClaudeSession>();
+// Every agent (Claude / Codex / Grok) is one core `AgentSession` (DESIGN §9):
+// the adapter owns its spawn recipe (hooks+PTY for Claude, app-server+`codex
+// --remote` for Codex, leader+`grok --leader` for Grok) and the workbench just
+// provides an `AgentHost` and observes/controls the returned handle. Keyed by
+// runtimeSessionId — the same namespaced manager id the terminal surface uses.
+const agentSessions = new Map<string, AgentSession>();
 // The Claude `--session-id` UUID (the own-action record's join key) keyed by
-// runtimeSessionId. Kept ALONGSIDE claudeSessions but OUTLIVES it: both the exit
+// runtimeSessionId. OUTLIVES the AgentSession: both the exit
 // path (forwardExit) and the quit path (disposeHub → finalizeAllWorkspaces)
 // dispose/clear the ClaudeSession before finalizeWorkspace records the
 // workspace-final, so the join key is preserved here to stamp that record. An
@@ -150,75 +148,49 @@ const claudeSessionIds = new Map<string, string>();
 // down on exit, and never forcibly when dirty (uncommitted work is kept).
 const activeWorkspaces = new Map<string, Workspace>();
 
-// --- Codex session state --------------------------------------------------
-// A Codex session (M5 C6, Model B) is a native `codex --remote` PTY (the tab,
-// keyed by runtimeSessionId like every other terminal) PLUS a structured
-// observer over its own app-server. The observer feeds the SAME agent
-// channels as Claude — the user drives the native TUI, chopsticks observes.
-interface CodexRuntime {
-  observer: CodexObserver;
-  server: AppServerHandle;
-}
-const codexSessions = new Map<string, CodexRuntime>();
-// `codex` resolves via the pty-host's inherited PATH (fine when the workbench is
-// launched from a shell); override with an absolute path for a bundled .app.
+// Agent executables resolve via the pty-host's inherited PATH (fine when the
+// workbench is launched from a shell); override with an absolute path for a
+// bundled .app.
 const CODEX_BIN = process.env.CHOPSTICKS_CODEX_BIN ?? 'codex';
-
-// --- Grok session state (M6 A6c) ------------------------------------------
-// A Grok session is a native `grok` TUI PTY (the tab) attached to a shared
-// `grok agent leader`, PLUS an ACP control client (createAcpSession over
-// `grok agent --leader … stdio`) that observes AND drives the SAME session on
-// that leader. Unlike Codex's paste injection, the ACP client injects
-// deterministically via `session/prompt`. The native TUI renders; chopsticks
-// observes + controls the shared session.
-interface GrokRuntime {
-  session: AcpSession;
-}
-const grokSessions = new Map<string, GrokRuntime>();
 const GROK_BIN = process.env.CHOPSTICKS_GROK_BIN ?? 'grok';
-// One shared leader per workbench process (a private socket under tmp). The TUI
-// PTY and the ACP client both connect to it, so they share one live session.
-let grokLeader: { socketPath: string; child: ChildProcess } | undefined;
 
-/** Start (once) the shared `grok agent leader` and return its socket path. */
-async function ensureGrokLeader(): Promise<string> {
-  if (grokLeader && grokLeader.child.exitCode === null && !grokLeader.child.killed) {
-    return grokLeader.socketPath;
-  }
-  // macOS /tmp is a symlink the agent's socket bind rejects — use the real tmp.
-  const dir = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'chopsticks-grok-'));
-  const socketPath = path.join(dir, 'leader.sock');
-  // `--relay-on-demand`: we're an interactive client, so defer the grok.com
-  // relay until (if ever) a headless client appears — otherwise the leader
-  // eagerly opens the relay at startup (a network+auth round-trip we don't need,
-  // which can also pull remote/queued prompts into the session).
-  const child = spawn(
-    GROK_BIN,
-    ['agent', 'leader', '--no-exit-on-disconnect', '--relay-on-demand', '--leader-socket', socketPath],
-    { stdio: 'ignore' },
-  );
-  for (let i = 0; i < 80 && !existsSync(socketPath); i++) await new Promise((r) => setTimeout(r, 250));
-  if (!existsSync(socketPath)) {
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      /* already gone */
-    }
-    throw new Error('grok agent leader failed to start (no socket)');
-  }
-  grokLeader = { socketPath, child };
-  return socketPath;
+// The terminal capability the adapters spawn/write their native TUIs through
+// (core `AgentHost`). spawnTerminal routes every agent PTY through the SAME
+// avocado transport as any other session; writeTerminal is a DIRECT manager
+// write (never the renderer input path), so an injected paste is never mistaken
+// for a human keystroke (user-priority §17.2).
+const host: AgentHost = {
+  async spawnTerminal(spec) {
+    const transport = hostTransport ?? (await transportReady);
+    const { sessionId: remoteId } = await transport.requestSpawn({
+      command: spec.command,
+      args: spec.args,
+      cwd: spec.cwd,
+      env: spec.env,
+      cols: spec.cols ?? DEFAULT_COLS,
+      rows: spec.rows ?? DEFAULT_ROWS,
+    });
+    return { runtimeSessionId: createNamespacedId('ipc', transport.transportId, remoteId) };
+  },
+  writeTerminal(runtimeSessionId, data) {
+    manager.write(runtimeSessionId, Buffer.from(data, 'utf8'));
+  },
+};
+
+// Grok's shared `grok agent leader` lives inside its backend — created lazily on
+// the first Grok tab, torn down at hub dispose.
+let grokBackend: GrokBackend | undefined;
+function getGrokBackend(): GrokBackend {
+  return (grokBackend ??= createGrokBackend({ executable: GROK_BIN, host }));
 }
 
-/** Tear down the shared leader (workbench shutdown). */
-function disposeGrokLeader(): void {
-  if (!grokLeader) return;
-  try {
-    grokLeader.child.kill('SIGTERM');
-  } catch {
-    /* already gone */
-  }
-  grokLeader = undefined;
+/** Wire a new agent session into the event fan-out + the unified registry. */
+function registerAgentSession(session: AgentSession): void {
+  agentSessions.set(session.runtimeSessionId, session);
+  session.onEvent((envelope: AgentEventEnvelope) => {
+    agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
+    scheduleAgentFlush();
+  });
 }
 
 // Own-action record (DESIGN §22.1): the append-only JSONL log of what the runtime
@@ -290,20 +262,14 @@ let hubDisposed = false;
 function disposeHub(): void {
   if (hubDisposed) return;
   hubDisposed = true;
-  // Tear down agent observation before the transport goes: each dispose() stops
-  // its hook bridge + transcript observer and cleans the generated settings file.
-  for (const claude of claudeSessions.values()) void claude.dispose().catch(() => undefined);
-  claudeSessions.clear();
-  // Codex sessions: stop each observer and its private app-server.
-  for (const { observer, server } of codexSessions.values()) {
-    void observer.dispose().catch(() => undefined);
-    server.dispose();
-  }
-  codexSessions.clear();
-  // Grok sessions: dispose each ACP control client, then the shared leader.
-  for (const { session } of grokSessions.values()) void session.dispose().catch(() => undefined);
-  grokSessions.clear();
-  disposeGrokLeader();
+  // Tear down agent observation before the transport goes: each session's
+  // dispose() stops its own backing services (hook bridge + transcript observer
+  // for Claude, observer + app-server for Codex, ACP control client for Grok).
+  for (const session of agentSessions.values()) void session.dispose().catch(() => undefined);
+  agentSessions.clear();
+  // Then the Grok backend's shared `grok agent leader`.
+  grokBackend?.dispose();
+  grokBackend = undefined;
   ptyHost?.kill('SIGTERM');
   ptyHost = undefined;
   bridge.dispose();
@@ -345,38 +311,26 @@ function forwardExit(exit: ExitEvent): void {
   hubEvents.emit('exit', exit);
   flushChunks();
   mainWindow?.webContents.send('chopsticks:exit', exit);
-  // A Claude session's PTY just ended: tear down observation (bridge + observer)
-  // and drop it. The process is already gone, so this is observation cleanup only.
-  const claude = claudeSessions.get(exit.sessionId);
-  if (claude) {
-    // Record the exit classification BEFORE disposing — dispose() drops our handle
-    // to the session whose sessionId is the record's join key. Only Claude sessions
-    // get a session-exit record; plain shells/fake-agents have no `claude` here.
+  // An agent session's PTY just ended: tear down its observation (each session's
+  // dispose() knows its own backing services). The process is already gone.
+  // Claude sessions carry an own-action join key (which OUTLIVES the session, for
+  // the workspace-final record); record the exit classification BEFORE disposing.
+  // Codex/Grok have no join key here, so this fires only for Claude.
+  const claudeJoinId = claudeSessionIds.get(exit.sessionId);
+  if (claudeJoinId) {
     void recorder.record({
       type: 'session-exit',
-      sessionId: claude.sessionId,
+      sessionId: claudeJoinId,
       runtimeSessionId: exit.sessionId,
       exitCode: exit.exitCode,
       signal: exit.signal,
       reason: exit.reason,
     });
-    claudeSessions.delete(exit.sessionId);
-    void claude.dispose().catch(() => undefined);
   }
-  // A Codex session's `codex --remote` PTY exited: tear down its observer and its
-  // private app-server (the terminal is gone, so this is observation cleanup).
-  const codex = codexSessions.get(exit.sessionId);
-  if (codex) {
-    codexSessions.delete(exit.sessionId);
-    void codex.observer.dispose().catch(() => undefined);
-    codex.server.dispose();
-  }
-  // A Grok session's native TUI PTY exited: dispose its ACP control client (the
-  // shared leader stays up for any other Grok tabs / is torn down at hub dispose).
-  const grok = grokSessions.get(exit.sessionId);
-  if (grok) {
-    grokSessions.delete(exit.sessionId);
-    void grok.session.dispose().catch(() => undefined);
+  const session = agentSessions.get(exit.sessionId);
+  if (session) {
+    agentSessions.delete(exit.sessionId);
+    void session.dispose().catch(() => undefined);
   }
   // Finalize the session's workspace: record its final diff, push the metadata,
   // and (worktree only) remove the worktree — retaining it if it is dirty.
@@ -528,11 +482,8 @@ function flushAgentEvents(): void {
   mainWindow?.webContents.send('chopsticks:agentEvents', batch);
   const touched = new Set(batch.map((m) => m.runtimeSessionId));
   for (const runtimeSessionId of touched) {
-    // Claude session, Codex observer, and Grok ACP client all expose state()/observationLevel().
-    const source =
-      claudeSessions.get(runtimeSessionId) ??
-      codexSessions.get(runtimeSessionId)?.observer ??
-      grokSessions.get(runtimeSessionId)?.session;
+    // Every agent session exposes state()/observationLevel() (core AgentSession).
+    const source = agentSessions.get(runtimeSessionId);
     if (!source) continue;
     mainWindow?.webContents.send('chopsticks:agentState', {
       runtimeSessionId,
@@ -550,8 +501,6 @@ function flushAgentEvents(): void {
  * manager, so injected bytes are never mistaken for a human keystroke.
  */
 async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> {
-  const transport = hostTransport ?? (await transportReady);
-
   // Default (omitted) is the current behavior: a shared workspace on the repo
   // root (honoring a legacy `cwd` override as the shared path).
   const request: WorkspaceRequest = {
@@ -596,26 +545,13 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
     // original directory — the renderer never asks main to re-materialize a
     // worktree on resume), so a resumed session reuses the existing directory.
     resume: opts.resume,
+    // Bridge Claude's richer `ports` onto the shared host: its spawn callback
+    // receives the FULL prepared session (settingsPath + CHOPSTICKS_HOOK_TOKEN
+    // env), which rides host.spawnTerminal's env grants → pty-host allowlist →
+    // Claude's hooks. `write` is the same direct-manager path every agent uses.
     ports: {
-      spawn: async (prepared) => {
-        // prepared.env carries CHOPSTICKS_HOOK_TOKEN; it rides the spawn request's
-        // env grants → pty-host buildAgentEnvironment allowlist → Claude's hooks.
-        const { sessionId: remoteId } = await transport.requestSpawn({
-          command: prepared.command,
-          args: prepared.args,
-          cwd: prepared.cwd,
-          env: prepared.env,
-          cols: DEFAULT_COLS,
-          rows: DEFAULT_ROWS,
-        });
-        // Announce precedes the ack, so the proxy session already exists here.
-        return { runtimeSessionId: createNamespacedId('ipc', transport.transportId, remoteId) };
-      },
-      write: (runtimeSessionId, data) => {
-        // DIRECT manager write — deliberately NOT the renderer 'chopsticks:write'
-        // path, so an injected paste never trips notifyUserInput (user priority).
-        manager.write(runtimeSessionId, Buffer.from(data, 'utf8'));
-      },
+      spawn: (prepared) => host.spawnTerminal(prepared),
+      write: host.writeTerminal,
     },
   }).catch(async (err: unknown) => {
     // The workspace exists but the session never started: don't leak a worktree.
@@ -625,14 +561,10 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
   });
 
   activeWorkspaces.set(session.runtimeSessionId, workspace);
-  claudeSessions.set(session.runtimeSessionId, session);
+  registerAgentSession(session);
   // Preserve the join key so the exit/quit paths can stamp the workspace-final
   // record after the ClaudeSession itself is disposed.
   claudeSessionIds.set(session.runtimeSessionId, session.sessionId);
-  session.onEvent((envelope: AgentEventEnvelope) => {
-    agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
-    scheduleAgentFlush();
-  });
 
   const info = manager.getSessionInfo(session.runtimeSessionId);
   if (!info) throw new Error(`claude session ${session.runtimeSessionId} not registered in manager`);
@@ -659,131 +591,42 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
  * and feeds the agent channels. The user drives the terminal; chopsticks watches.
  */
 async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> {
-  const transport = hostTransport ?? (await transportReady);
-
-  const server = spawnAppServer({ executable: CODEX_BIN });
-  try {
-    await server.ready();
-  } catch (err) {
-    server.dispose();
-    throw err;
-  }
-
-  // Resume reopens the SAME thread (`codex resume <id> --remote`); otherwise a
-  // fresh `codex --remote` TUI (the thread appears on the first prompt).
-  const remoteAddr = `unix://${server.socketPath}`;
-  const args = opts.resume ? ['resume', opts.resume, '--remote', remoteAddr] : ['--remote', remoteAddr];
-
-  let runtimeSessionId: string;
-  try {
-    const { sessionId: remoteId } = await transport.requestSpawn({
-      command: CODEX_BIN,
-      args,
-      cwd: opts.cwd ?? repoRoot,
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
-    });
-    runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
-  } catch (err) {
-    server.dispose();
-    throw err;
-  }
-
-  const observer = await createCodexObserver({ transport: wsOverUnixTransport(server.socketPath) }).catch((err) => {
-    server.dispose();
-    throw err;
+  const session = await createCodexTuiSession({
+    cwd: opts.cwd ?? repoRoot,
+    resume: opts.resume,
+    executable: CODEX_BIN,
+    host,
   });
-  observer.onEvent((envelope: AgentEventEnvelope) => {
-    agentEventBatch.push({ runtimeSessionId, envelope });
-    scheduleAgentFlush();
-  });
-  codexSessions.set(runtimeSessionId, { observer, server });
-
-  const info = manager.getSessionInfo(runtimeSessionId);
-  if (!info) throw new Error(`codex session ${runtimeSessionId} not registered in manager`);
-  return { runtimeSessionId, descriptor: infoToDescriptor(info), threadId: observer.sessionId };
-}
-
-/** Attach an ACP control client to an EXISTING leader session, retrying while
- *  the TUI is still registering it (loadSession 404s until then). */
-async function attachGrokControl(cwd: string, socketPath: string, sessionId: string): Promise<AcpSession> {
-  const leaderArgs = ['agent', '--leader', '--leader-socket', socketPath, 'stdio'];
-  let lastErr: unknown;
-  for (let i = 0; i < 15; i++) {
-    try {
-      return await createAcpSession({ cwd, executable: GROK_BIN, args: leaderArgs, resume: sessionId });
-    } catch (err) {
-      lastErr = err; // a failed loadSession closes its own transport (adapter)
-      await new Promise((r) => setTimeout(r, 400));
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('grok ACP control attach failed');
+  registerAgentSession(session);
+  const info = manager.getSessionInfo(session.runtimeSessionId);
+  if (!info) throw new Error(`codex session ${session.runtimeSessionId} not registered in manager`);
+  // The thread id materializes on the first prompt ('' until then; the renderer
+  // captures it off event envelopes for resume).
+  return {
+    runtimeSessionId: session.runtimeSessionId,
+    descriptor: infoToDescriptor(info),
+    threadId: session.sessionId || undefined,
+  };
 }
 
 /**
- * Start a Grok session (M6 A6c, native-TUI + leader coexistence). Grok speaks
- * ACP over a shared `grok agent leader`, and the tab is a native `grok` TUI in a
- * PTY on that leader while our ACP control client (`grok agent --leader … stdio`)
- * observes AND injects deterministically (`session/prompt`) on the SAME session.
- *
- * The TUI goes FIRST and OWNS session creation (`--session-id <uuid>` for a new
- * tab, `--resume <id>` for a resumed one): that shows the normal welcome and
- * fires `session_start` exactly once — creating via ACP then resuming in the TUI
- * skipped the welcome and doubled the hook. It also means the terminal appears
- * after ONE grok boot, not three. The ACP client then ATTACHES (loadSession) —
- * which fires no second `session_start` — retrying until the TUI has registered
- * the session on the leader (there is no ACP `session/list` to discover it).
+ * Start a Grok session (M6 A6c): the tab is a native `grok --leader` TUI on the
+ * backend's shared leader; an ACP control client attaches to the SAME session to
+ * observe + inject. The adapter's backend owns the whole recipe (leader, TUI
+ * spawn via the host, welcome-preserving `--session-id`/`--resume`, and the
+ * async control attach) — see `createGrokBackend`. This returns as soon as the
+ * terminal is up; control comes online in the background.
  */
 async function createGrokSessionForRenderer(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> {
-  const transport = hostTransport ?? (await transportReady);
-  const cwd = opts.cwd ?? repoRoot;
-  const socketPath = await ensureGrokLeader();
-
-  // We own the id and hand it to BOTH clients. A fresh tab dictates a new id to
-  // the TUI (`--session-id`, a NEW conversation → welcome); resume reopens it.
-  const grokSessionId = opts.resume ?? randomUUID();
-
-  // 1. Native TUI FIRST — it creates (or reopens) the session and renders it.
-  //    `--leader` is REQUIRED: without it the TUI runs standalone (its own
-  //    backend) and never joins our leader, so injection from the ACP control
-  //    client wouldn't reach it. With it, the TUI and the ACP client share ONE
-  //    live session on our leader. (The TUI hides `--leader` from --help, but it
-  //    is accepted; the alternative is `[cli] use_leader = true` in config.)
-  const tuiArgs = opts.resume
-    ? ['--leader', '--leader-socket', socketPath, '--resume', grokSessionId]
-    : ['--leader', '--leader-socket', socketPath, '--session-id', grokSessionId];
-  const { sessionId: remoteId } = await transport.requestSpawn({
-    command: GROK_BIN,
-    args: tuiArgs,
-    cwd,
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-  });
-  const runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
-
-  // 2. ACP control client ATTACHES to that same session on the leader (observe +
-  //    inject), retrying while the TUI registers it. Non-fatal: if it never
-  //    attaches, the terminal still works, just without the activity panel.
-  attachGrokControl(cwd, socketPath, grokSessionId)
-    .then((session) => {
-      if (!manager.getSessionInfo(runtimeSessionId)) {
-        // The tab already exited before control attached — don't leak it.
-        void session.dispose().catch(() => undefined);
-        return;
-      }
-      session.onEvent((envelope: AgentEventEnvelope) => {
-        agentEventBatch.push({ runtimeSessionId, envelope });
-        scheduleAgentFlush();
-      });
-      grokSessions.set(runtimeSessionId, { session });
-    })
-    .catch((err) => {
-      hubEvents.emit('grok-control-error', { runtimeSessionId, error: err });
-    });
-
-  const info = manager.getSessionInfo(runtimeSessionId);
-  if (!info) throw new Error(`grok session ${runtimeSessionId} not registered in manager`);
-  return { runtimeSessionId, descriptor: infoToDescriptor(info), sessionId: grokSessionId };
+  const session = await getGrokBackend().createSession({ cwd: opts.cwd ?? repoRoot, resume: opts.resume });
+  registerAgentSession(session);
+  const info = manager.getSessionInfo(session.runtimeSessionId);
+  if (!info) throw new Error(`grok session ${session.runtimeSessionId} not registered in manager`);
+  return {
+    runtimeSessionId: session.runtimeSessionId,
+    descriptor: infoToDescriptor(info),
+    sessionId: session.sessionId,
+  };
 }
 
 function registerIpc(): void {
@@ -802,64 +645,33 @@ function registerIpc(): void {
     return workspace ? workspace.diff() : null;
   });
   ipcMain.handle('chopsticks:submitPrompt', async (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
-    const claude = claudeSessions.get(opts.runtimeSessionId);
-    if (claude) {
-      const receipt = await claude.submitPrompt({ text: opts.text });
-      // Record the honest injection receipt (DESIGN §17): `uncertain` rides through as
-      // itself, never collapsed. reason/turnId live on distinct arms of the receipt union.
-      void recorder.record({
-        type: 'injection',
-        sessionId: claude.sessionId,
-        runtimeSessionId: opts.runtimeSessionId,
-        text: opts.text,
-        outcome: receipt.status,
-        reason: 'reason' in receipt ? receipt.reason : undefined,
-        turnId: 'turnId' in receipt ? receipt.turnId : undefined,
-      });
-      return receipt;
-    }
-    // Codex: drive the native TUI the same way as Claude — bracketed-paste the
-    // prompt into its terminal and submit. Verified to record the CLEAN text on
-    // the thread (no escape markers); the observer surfaces the resulting turn.
-    // A DIRECT manager write (not chopsticks:write), so it is never mistaken for a
-    // human keystroke. Confirmation is the turn appearing in the observed stream.
-    const codex = codexSessions.get(opts.runtimeSessionId);
-    if (codex) {
-      manager.write(opts.runtimeSessionId, Buffer.from(`\x1b[200~${opts.text}\x1b[201~\r`, 'utf8'));
-      void recorder.record({
-        type: 'injection',
-        sessionId: codex.observer.sessionId ?? `codex-pending:${opts.runtimeSessionId}`,
-        runtimeSessionId: opts.runtimeSessionId,
-        text: opts.text,
-        outcome: 'confirmed',
-      });
-      return { status: 'confirmed' };
-    }
-    // Grok: drive via the ACP control client — DETERMINISTIC `session/prompt`
-    // injection (not paste). Because the TUI shares this session on the leader,
-    // the prompt appears in the native terminal too. The receipt is authoritative.
-    const grok = grokSessions.get(opts.runtimeSessionId);
-    if (grok) {
-      const receipt = await grok.session.submitPrompt({ text: opts.text });
-      void recorder.record({
-        type: 'injection',
-        sessionId: grok.session.sessionId,
-        runtimeSessionId: opts.runtimeSessionId,
-        text: opts.text,
-        outcome: receipt.status,
-        reason: 'reason' in receipt ? receipt.reason : undefined,
-        turnId: 'turnId' in receipt ? receipt.turnId : undefined,
-      });
-      return receipt;
-    }
-    // No session → nothing was injected and no sessionId to join on; the synthetic
-    // rejection just informs the UI.
-    return { status: 'rejected', reason: 'no such session' };
+    const session = agentSessions.get(opts.runtimeSessionId);
+    // No session → nothing was injected and no id to join on; inform the UI.
+    if (!session) return { status: 'rejected', reason: 'no such session' };
+    // Every agent injects through its OWN submitPrompt (guarded paste for Claude,
+    // bracketed paste into the native TUI for Codex, deterministic session/prompt
+    // for Grok) — the adapter owns the mechanism. Record the honest receipt
+    // (DESIGN §17): `uncertain` rides through as itself, never collapsed.
+    const receipt = await session.submitPrompt({ text: opts.text });
+    void recorder.record({
+      type: 'injection',
+      // The join key is the agent's native id; '' until a Codex thread
+      // materializes, so fall back to a pending marker.
+      sessionId: session.sessionId || `pending:${opts.runtimeSessionId}`,
+      runtimeSessionId: opts.runtimeSessionId,
+      text: opts.text,
+      outcome: receipt.status,
+      reason: 'reason' in receipt ? receipt.reason : undefined,
+      turnId: 'turnId' in receipt ? receipt.turnId : undefined,
+    });
+    return receipt;
   });
   ipcMain.handle('chopsticks:write', (_e, sessionId: string, dataBase64: string) => {
-    // User priority (DESIGN §17.2): a real keystroke on a Claude terminal must
+    // User priority (DESIGN §17.2): a real keystroke on an agent terminal must
     // resolve any in-flight injection as 'uncertain' BEFORE its bytes land.
-    claudeSessions.get(sessionId)?.notifyUserInput();
+    // notifyUserInput is a no-op for native-TUI drivers (Codex/Grok), so this is
+    // safe for every agent kind.
+    agentSessions.get(sessionId)?.notifyUserInput();
     manager.write(sessionId, Buffer.from(dataBase64, 'base64'));
   });
   ipcMain.handle('chopsticks:resize', (_e, sessionId: string, cols: number, rows: number) => {
