@@ -29,6 +29,9 @@ importers:
       '@vibecook/avocado-sdk':
         specifier: ^0.2.2
         version: 0.2.2(@xterm/addon-fit@0.10.0(@xterm/xterm@5.5.0))(node-pty@1.1.0)
+      '@vibecook/chopsticks-adapter-acp':
+        specifier: workspace:*
+        version: link:../../packages/adapter-acp
       '@vibecook/chopsticks-adapter-claude':
         specifier: workspace:*
         version: link:../../packages/adapter-claude

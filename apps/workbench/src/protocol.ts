@@ -207,6 +207,36 @@ export interface CodexSessionInfo {
   threadId?: string;
 }
 
+// ───────────────────────── Grok session surface ───────────────────────────
+
+/** Renderer-visible options for starting a Grok session (native TUI + ACP control). */
+export interface CreateGrokSessionOptions {
+  /** Working directory; defaults to the chopsticks repo root main-side. */
+  cwd?: string;
+  /**
+   * Resume an existing Grok session by id (`grok --resume <id>` for the TUI +
+   * ACP `session/load`). The resumed session is a NEW terminal tab attached to
+   * the SAME session on the shared leader (history intact). The id is the ACP
+   * session id `createGrokSession` returned.
+   */
+  resume?: string;
+}
+
+/**
+ * What `createGrokSession` returns. A Grok session (M6 A6c) is a native `grok`
+ * TUI in a PTY (runtimeSessionId = the PTY id, sharing chunk/write/exit) attached
+ * to a shared `grok agent leader`, PLUS an ACP control client in main
+ * (`createAcpSession` over `grok agent --leader … stdio`) that observes AND
+ * drives the SAME session — feeding the agentEvents/agentState channels and
+ * injecting deterministically via `session/prompt`. `sessionId` is the ACP
+ * session id (the spaghetti join), known at creation (unlike Codex's thread).
+ */
+export interface GrokSessionInfo {
+  runtimeSessionId: string;
+  descriptor: SessionDescriptor;
+  sessionId: string;
+}
+
 /** Programmatic prompt injection request (DESIGN §17); text is pasted verbatim then submitted. */
 export interface SubmitPromptOptions {
   runtimeSessionId: string;
@@ -238,6 +268,9 @@ export interface ChopsticksBridge {
   // Codex session surface: a native `codex --remote` terminal + a structured
   // observer in main (shares the agentEvents/agentState channels above).
   createCodexSession(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo>;
+  // Grok session surface: a native `grok` TUI on a shared leader + an ACP control
+  // client in main (shares the agentEvents/agentState channels; deterministic inject).
+  createGrokSession(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo>;
   submitPrompt(opts: SubmitPromptOptions): Promise<PromptReceipt>;
   onAgentEvents(cb: (events: AgentEventMessage[]) => void): () => void;
   onAgentState(cb: (state: AgentStateMessage) => void): () => void;

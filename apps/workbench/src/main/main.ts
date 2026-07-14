@@ -18,7 +18,7 @@
 
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { app, BrowserWindow, ipcMain } from 'electron';
@@ -45,6 +45,7 @@ import {
   type AppServerHandle,
   type CodexObserver,
 } from '@vibecook/chopsticks-adapter-codex';
+import { createAcpSession, type AcpSession } from '@vibecook/chopsticks-adapter-acp';
 import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-record';
 import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
 import {
@@ -61,8 +62,10 @@ import type {
   CreateClaudeSessionOptions,
   CreateClaudeSessionResult,
   CreateCodexSessionOptions,
+  CreateGrokSessionOptions,
   CreateSessionOptions,
   ExitEvent,
+  GrokSessionInfo,
   PromptReceipt,
   SerializedSessionState,
   SessionDescriptor,
@@ -160,6 +163,57 @@ const codexSessions = new Map<string, CodexRuntime>();
 // launched from a shell); override with an absolute path for a bundled .app.
 const CODEX_BIN = process.env.CHOPSTICKS_CODEX_BIN ?? 'codex';
 
+// --- Grok session state (M6 A6c) ------------------------------------------
+// A Grok session is a native `grok` TUI PTY (the tab) attached to a shared
+// `grok agent leader`, PLUS an ACP control client (createAcpSession over
+// `grok agent --leader … stdio`) that observes AND drives the SAME session on
+// that leader. Unlike Codex's paste injection, the ACP client injects
+// deterministically via `session/prompt`. The native TUI renders; chopsticks
+// observes + controls the shared session.
+interface GrokRuntime {
+  session: AcpSession;
+}
+const grokSessions = new Map<string, GrokRuntime>();
+const GROK_BIN = process.env.CHOPSTICKS_GROK_BIN ?? 'grok';
+// One shared leader per workbench process (a private socket under tmp). The TUI
+// PTY and the ACP client both connect to it, so they share one live session.
+let grokLeader: { socketPath: string; child: ChildProcess } | undefined;
+
+/** Start (once) the shared `grok agent leader` and return its socket path. */
+async function ensureGrokLeader(): Promise<string> {
+  if (grokLeader && grokLeader.child.exitCode === null && !grokLeader.child.killed) {
+    return grokLeader.socketPath;
+  }
+  // macOS /tmp is a symlink the agent's socket bind rejects — use the real tmp.
+  const dir = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'chopsticks-grok-'));
+  const socketPath = path.join(dir, 'leader.sock');
+  const child = spawn(GROK_BIN, ['agent', 'leader', '--no-exit-on-disconnect', '--leader-socket', socketPath], {
+    stdio: 'ignore',
+  });
+  for (let i = 0; i < 80 && !existsSync(socketPath); i++) await new Promise((r) => setTimeout(r, 250));
+  if (!existsSync(socketPath)) {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      /* already gone */
+    }
+    throw new Error('grok agent leader failed to start (no socket)');
+  }
+  grokLeader = { socketPath, child };
+  return socketPath;
+}
+
+/** Tear down the shared leader (workbench shutdown). */
+function disposeGrokLeader(): void {
+  if (!grokLeader) return;
+  try {
+    grokLeader.child.kill('SIGTERM');
+  } catch {
+    /* already gone */
+  }
+  grokLeader = undefined;
+}
+
 // Own-action record (DESIGN §22.1): the append-only JSONL log of what the runtime
 // itself did — injections, workspace finals, exit classifications, policy
 // conflicts. One module-level recorder, default ~/.chopsticks/own-actions.jsonl.
@@ -239,6 +293,10 @@ function disposeHub(): void {
     server.dispose();
   }
   codexSessions.clear();
+  // Grok sessions: dispose each ACP control client, then the shared leader.
+  for (const { session } of grokSessions.values()) void session.dispose().catch(() => undefined);
+  grokSessions.clear();
+  disposeGrokLeader();
   ptyHost?.kill('SIGTERM');
   ptyHost = undefined;
   bridge.dispose();
@@ -305,6 +363,13 @@ function forwardExit(exit: ExitEvent): void {
     codexSessions.delete(exit.sessionId);
     void codex.observer.dispose().catch(() => undefined);
     codex.server.dispose();
+  }
+  // A Grok session's native TUI PTY exited: dispose its ACP control client (the
+  // shared leader stays up for any other Grok tabs / is torn down at hub dispose).
+  const grok = grokSessions.get(exit.sessionId);
+  if (grok) {
+    grokSessions.delete(exit.sessionId);
+    void grok.session.dispose().catch(() => undefined);
   }
   // Finalize the session's workspace: record its final diff, push the metadata,
   // and (worktree only) remove the worktree — retaining it if it is dirty.
@@ -456,8 +521,11 @@ function flushAgentEvents(): void {
   mainWindow?.webContents.send('chopsticks:agentEvents', batch);
   const touched = new Set(batch.map((m) => m.runtimeSessionId));
   for (const runtimeSessionId of touched) {
-    // Both a Claude session and a Codex observer expose state()/observationLevel().
-    const source = claudeSessions.get(runtimeSessionId) ?? codexSessions.get(runtimeSessionId)?.observer;
+    // Claude session, Codex observer, and Grok ACP client all expose state()/observationLevel().
+    const source =
+      claudeSessions.get(runtimeSessionId) ??
+      codexSessions.get(runtimeSessionId)?.observer ??
+      grokSessions.get(runtimeSessionId)?.session;
     if (!source) continue;
     mainWindow?.webContents.send('chopsticks:agentState', {
       runtimeSessionId,
@@ -629,6 +697,55 @@ async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): P
   return { runtimeSessionId, descriptor: infoToDescriptor(info), threadId: observer.sessionId };
 }
 
+/**
+ * Start a Grok session (M6 A6c, native-TUI + leader coexistence). Unlike Codex
+ * (app-server observer), Grok speaks ACP: (1) a shared `grok agent leader`, (2)
+ * our ACP control client (`createAcpSession` over `grok agent --leader … stdio`)
+ * which creates — or resumes — the session and mints its id, and (3) a native
+ * `grok` TUI in a PTY attached to that SAME session on the leader
+ * (`grok --leader-socket <sock> --resume <id>`). The ACP client observes AND
+ * injects deterministically (`session/prompt`); the TUI renders. Ordering
+ * matters: our client creates first so the TUI can attach by the minted id
+ * (there is no ACP `session/list` to discover it — verified by probe).
+ */
+async function createGrokSessionForRenderer(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> {
+  const transport = hostTransport ?? (await transportReady);
+  const cwd = opts.cwd ?? repoRoot;
+  const socketPath = await ensureGrokLeader();
+
+  // 1. ACP control client through the leader — creates (or loads) the session.
+  const leaderArgs = ['agent', '--leader', '--leader-socket', socketPath, 'stdio'];
+  const session = await createAcpSession({ cwd, executable: GROK_BIN, args: leaderArgs, resume: opts.resume });
+  const grokSessionId = session.sessionId;
+
+  // 2. Native TUI PTY attached to the SAME leader + session (the terminal tab).
+  const args = ['--leader-socket', socketPath, '--resume', grokSessionId];
+  let runtimeSessionId: string;
+  try {
+    const { sessionId: remoteId } = await transport.requestSpawn({
+      command: GROK_BIN,
+      args,
+      cwd,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+    });
+    runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
+  } catch (err) {
+    await session.dispose().catch(() => undefined);
+    throw err;
+  }
+
+  session.onEvent((envelope: AgentEventEnvelope) => {
+    agentEventBatch.push({ runtimeSessionId, envelope });
+    scheduleAgentFlush();
+  });
+  grokSessions.set(runtimeSessionId, { session });
+
+  const info = manager.getSessionInfo(runtimeSessionId);
+  if (!info) throw new Error(`grok session ${runtimeSessionId} not registered in manager`);
+  return { runtimeSessionId, descriptor: infoToDescriptor(info), sessionId: grokSessionId };
+}
+
 function registerIpc(): void {
   ipcMain.handle('chopsticks:createSession', (_e, opts: CreateSessionOptions) => createSession(opts));
   ipcMain.handle('chopsticks:createClaudeSession', (_e, opts: CreateClaudeSessionOptions) =>
@@ -636,6 +753,9 @@ function registerIpc(): void {
   );
   ipcMain.handle('chopsticks:createCodexSession', (_e, opts: CreateCodexSessionOptions) =>
     createCodexSessionForRenderer(opts ?? {}),
+  );
+  ipcMain.handle('chopsticks:createGrokSession', (_e, opts: CreateGrokSessionOptions) =>
+    createGrokSessionForRenderer(opts ?? {}),
   );
   ipcMain.handle('chopsticks:workspaceDiff', (_e, runtimeSessionId: string) => {
     const workspace = activeWorkspaces.get(runtimeSessionId);
@@ -674,6 +794,23 @@ function registerIpc(): void {
         outcome: 'confirmed',
       });
       return { status: 'confirmed' };
+    }
+    // Grok: drive via the ACP control client — DETERMINISTIC `session/prompt`
+    // injection (not paste). Because the TUI shares this session on the leader,
+    // the prompt appears in the native terminal too. The receipt is authoritative.
+    const grok = grokSessions.get(opts.runtimeSessionId);
+    if (grok) {
+      const receipt = await grok.session.submitPrompt({ text: opts.text });
+      void recorder.record({
+        type: 'injection',
+        sessionId: grok.session.sessionId,
+        runtimeSessionId: opts.runtimeSessionId,
+        text: opts.text,
+        outcome: receipt.status,
+        reason: 'reason' in receipt ? receipt.reason : undefined,
+        turnId: 'turnId' in receipt ? receipt.turnId : undefined,
+      });
+      return receipt;
     }
     // No session → nothing was injected and no sessionId to join on; the synthetic
     // rejection just informs the UI.

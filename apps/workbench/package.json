@@ -16,6 +16,7 @@
   "dependencies": {
     "@parcel/watcher": "^2.5.0",
     "@vibecook/avocado-sdk": "^0.2.2",
+    "@vibecook/chopsticks-adapter-acp": "workspace:*",
     "@vibecook/chopsticks-adapter-claude": "workspace:*",
     "@vibecook/chopsticks-adapter-codex": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*",

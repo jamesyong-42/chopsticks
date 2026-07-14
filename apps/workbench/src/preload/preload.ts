@@ -16,7 +16,9 @@ import type {
   CreateClaudeSessionOptions,
   CreateClaudeSessionResult,
   CreateCodexSessionOptions,
+  CreateGrokSessionOptions,
   CreateSessionOptions,
+  GrokSessionInfo,
   ExitEvent,
   PromptReceipt,
   ReplayResult,
@@ -50,6 +52,8 @@ const bridge: ChopsticksBridge = {
     ipcRenderer.invoke('chopsticks:createClaudeSession', opts),
   createCodexSession: (opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> =>
     ipcRenderer.invoke('chopsticks:createCodexSession', opts),
+  createGrokSession: (opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> =>
+    ipcRenderer.invoke('chopsticks:createGrokSession', opts),
   submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
     ipcRenderer.invoke('chopsticks:submitPrompt', opts),
   onAgentEvents: (cb: (events: AgentEventMessage[]) => void): (() => void) => {

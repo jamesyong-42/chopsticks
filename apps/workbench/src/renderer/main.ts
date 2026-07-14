@@ -56,8 +56,8 @@ class TerminalTab {
   /** False until history has been restored, so live chunks buffer first. */
   ready = false;
   exited = false;
-  /** Agent tabs (claude/codex) get the activity panel; plain terminals do not. */
-  agentKind: 'claude' | 'codex' | undefined = undefined;
+  /** Agent tabs (claude/codex/grok) get the activity panel; plain terminals do not. */
+  agentKind: 'claude' | 'codex' | 'grok' | undefined = undefined;
 
   constructor(
     public sessionId: string,
@@ -156,6 +156,8 @@ class Workbench {
   private readonly claudeSessionId = new Map<string, string>();
   /** The Codex thread id per Codex session (runtimeSessionId → threadId), for resume. */
   private readonly codexThreadId = new Map<string, string>();
+  /** The ACP session id per Grok session (runtimeSessionId → sessionId), for resume. */
+  private readonly grokSessionId = new Map<string, string>();
   /** Slow-poll timers refreshing the live diff, keyed by runtimeSessionId. */
   private readonly diffPollers = new Map<string, ReturnType<typeof setInterval>>();
   private activeId: string | undefined;
@@ -209,7 +211,7 @@ class Workbench {
     if (event.runtimeSessionId === this.activeId) this.refreshPanel();
   }
 
-  private makeTab(sessionId: string, title: string, agentKind?: 'claude' | 'codex'): TerminalTab {
+  private makeTab(sessionId: string, title: string, agentKind?: 'claude' | 'codex' | 'grok'): TerminalTab {
     const tab = new TerminalTab(
       sessionId,
       title,
@@ -259,9 +261,21 @@ class Workbench {
       // undefined — the panel then shows the agent state without a workspace section.
       const workspace = tab.agentKind === 'claude' ? this.claudeWorkspace.get(id) : undefined;
       // Resume is possible only once the session has a resumable id: a Claude
-      // `--session-id`, or a materialized Codex thread id.
-      const canResume = tab.agentKind === 'claude' ? this.claudeSessionId.has(id) : this.codexThreadId.has(id);
-      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], workspace, tab.exited, canResume);
+      // `--session-id`, a materialized Codex thread id, or a Grok ACP session id.
+      const canResume =
+        tab.agentKind === 'claude'
+          ? this.claudeSessionId.has(id)
+          : tab.agentKind === 'grok'
+            ? this.grokSessionId.has(id)
+            : this.codexThreadId.has(id);
+      this.panel.render(
+        id,
+        this.claudeState.get(id),
+        this.claudeEvents.get(id) ?? [],
+        workspace,
+        tab.exited,
+        canResume,
+      );
     } else {
       this.panel.hide();
     }
@@ -372,11 +386,58 @@ class Workbench {
     await this.startClaude({ resume: sessionId, workspace }, 'claude ⟲', note);
   }
 
-  /** Panel Resume dispatch: Claude and Codex resume differently. */
+  /** Panel Resume dispatch: Claude, Codex, and Grok resume differently. */
   async resumeAgent(runtimeSessionId: string): Promise<void> {
     const tab = this.tabs.get(runtimeSessionId);
     if (tab?.agentKind === 'codex') return this.resumeCodex(runtimeSessionId);
+    if (tab?.agentKind === 'grok') return this.resumeGrok(runtimeSessionId);
     return this.resumeClaude(runtimeSessionId);
+  }
+
+  /**
+   * Start a Grok session (M6 A6c): the tab is a native `grok` TUI attached to a
+   * shared leader; an ACP control client in main observes the SAME session and
+   * feeds this tab's activity panel, and Send injects deterministically via
+   * `session/prompt`. No workspace — the terminal is the native input.
+   */
+  async newGrokSession(): Promise<void> {
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    const tab = this.makeTab(tempId, 'grok', 'grok');
+    this.activateTab(tab);
+    tab.refit();
+    try {
+      const result = await chopsticks.createGrokSession({});
+      this.rebind(tab, tempId, result.runtimeSessionId);
+      // Grok's resumable id (the ACP session id) is known at creation.
+      this.grokSessionId.set(result.runtimeSessionId, result.sessionId);
+      this.flushPending(tab);
+      this.refreshPanel();
+    } catch (err) {
+      tab.markExited(err instanceof Error ? err.message : 'spawn failed');
+    }
+  }
+
+  /**
+   * Resume an EXITED Grok tab as a NEW tab attached to the same session on the
+   * leader (`grok --resume <id>` + ACP `session/load`, history intact). Needs the
+   * ACP session id captured at creation.
+   */
+  async resumeGrok(runtimeSessionId: string): Promise<void> {
+    const sessionId = this.grokSessionId.get(runtimeSessionId);
+    if (!sessionId) return;
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    const tab = this.makeTab(tempId, 'grok ⟲', 'grok');
+    this.activateTab(tab);
+    tab.refit();
+    try {
+      const result = await chopsticks.createGrokSession({ resume: sessionId });
+      this.rebind(tab, tempId, result.runtimeSessionId);
+      this.grokSessionId.set(result.runtimeSessionId, result.sessionId);
+      this.flushPending(tab);
+      this.refreshPanel();
+    } catch (err) {
+      tab.markExited(err instanceof Error ? err.message : 'spawn failed');
+    }
   }
 
   /**
@@ -473,6 +534,7 @@ class Workbench {
     this.claudeWorkspace.delete(sessionId);
     this.claudeSessionId.delete(sessionId);
     this.codexThreadId.delete(sessionId);
+    this.grokSessionId.delete(sessionId);
     this.stopDiffPoll(sessionId);
     if (this.activeId === sessionId) {
       this.activeId = undefined;
@@ -512,5 +574,6 @@ document.getElementById('new-claude')?.addEventListener('click', () => {
   void workbench.newClaudeSession(isolation);
 });
 document.getElementById('new-codex')?.addEventListener('click', () => void workbench.newCodexSession());
+document.getElementById('new-grok')?.addEventListener('click', () => void workbench.newGrokSession());
 
 void workbench.restore();
