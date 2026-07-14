@@ -21,7 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
 import {
   createNamespacedId,
   createProxyPTYSession,
@@ -838,12 +838,29 @@ function registerIpc(): void {
 
 // --- window ---------------------------------------------------------------
 
+/** Keep cmd+T / cmd+W / cmd+D free for the renderer (Ghostty keybind model). */
+function installMenu(): void {
+  const isMac = process.platform === 'darwin';
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac ? ([{ role: 'appMenu' }] satisfies MenuItemConstructorOptions[]) : []),
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function createWindow(): void {
+  // Ghostty-parity window chrome (avocado/apps/ghostty): hiddenInset titlebar,
+  // terminal-colored background, free cmd+T/W/D for the renderer surface.
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 720,
-    title: 'chopsticks workbench',
-    backgroundColor: '#1e1e2e',
+    minWidth: 400,
+    minHeight: 300,
+    title: 'chopsticks',
+    backgroundColor: '#282c34',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -917,6 +934,7 @@ void app.whenReady().then(() => {
     void runSmoke();
     return;
   }
+  installMenu();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

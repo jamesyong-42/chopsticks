@@ -1,0 +1,349 @@
+/* Ghostty-parity chrome (from avocado/apps/ghostty) + chopsticks activity panel.
+ *
+ * Terminal colors come from the restty engine (Ghostty Default Style Dark);
+ * this file only styles the window chrome around the surfaces. */
+
+:root {
+  --bg: #282c34; /* Ghostty Default Style Dark background */
+  --titlebar-bg: #21252b;
+  --fg: #dcdfe4;
+  --fg-dim: #9da5b4;
+  --accent: #61afef;
+  --divider: rgba(255, 255, 255, 0.14);
+  --dim-overlay: rgba(40, 44, 52, 0.35); /* ≈ unfocused-split-opacity 0.7 */
+  --titlebar-font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --panel-bg: #21252b;
+  --panel-border: rgba(255, 255, 255, 0.08);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  overflow: hidden;
+  color: var(--fg);
+  font-family: var(--titlebar-font);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Titlebar / tabs (Ghostty transparent titlebar) ─────────────────── */
+
+.titlebar {
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  background: var(--titlebar-bg);
+  color: var(--fg-dim);
+  font: 12px var(--titlebar-font);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+/* Leave room for macOS traffic lights (hiddenInset). */
+.titlebar.mac {
+  padding-left: 78px;
+}
+
+/* Single tab: titlebar blends into the terminal, Ghostty-style. */
+.titlebar.single {
+  background: var(--bg);
+}
+
+.titlebar-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.tab {
+  -webkit-app-region: no-drag;
+  flex: 1 1 0;
+  min-width: 60px;
+  max-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-right: 1px solid rgba(0, 0, 0, 0.25);
+  cursor: default;
+  overflow: hidden;
+}
+
+.tab.active {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tab:hover .tab-close {
+  opacity: 0.8;
+}
+
+.tab-close:hover {
+  background: rgba(255, 255, 255, 0.15);
+  opacity: 1;
+}
+
+.tab-new {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  width: 34px;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.tab-new:hover {
+  color: var(--fg);
+}
+
+.titlebar-actions {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.titlebar-actions button,
+.titlebar-actions select {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: 11px var(--titlebar-font);
+  cursor: pointer;
+}
+
+.titlebar-actions button:hover,
+.titlebar-actions select:hover {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.titlebar-actions select {
+  appearance: none;
+  padding-right: 18px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
+    linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
+  background-position:
+    calc(100% - 10px) 10px,
+    calc(100% - 6px) 10px;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.titlebar-actions .accent {
+  color: var(--accent);
+}
+
+/* ── Body: surfaces + optional activity panel ───────────────────────── */
+
+.work-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.surface-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Inactive tabs stay mounted (terminals keep running) but hidden with
+ * visibility so their layout size is preserved — display:none would zero
+ * the ResizeObserver and shrink the PTY. */
+.tab-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.tab-content.hidden {
+  visibility: hidden;
+}
+
+.split {
+  display: flex;
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.split-cell {
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 1px visible line with a 5px grab zone. */
+.divider {
+  flex: 0 0 5px;
+  background-color: var(--divider);
+  background-clip: content-box;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  touch-action: none;
+}
+
+.divider.row {
+  cursor: col-resize;
+  padding: 0 2px;
+}
+
+.divider.column {
+  cursor: row-resize;
+  padding: 2px 0;
+}
+
+.term-pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.term-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Ghostty dims unfocused splits (unfocused-split-opacity ≈ 0.7). */
+.pane-dim {
+  position: absolute;
+  inset: 0;
+  background: var(--dim-overlay);
+  pointer-events: none;
+}
+
+/* ── Engine fill (restty canvas inside the headless surface host) ───── */
+
+[data-terminal-host] .restty-pane,
+[data-terminal-host] .pane,
+[data-terminal-host] canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+[data-engine='restty'] [data-terminal-host] {
+  isolation: isolate;
+}
+
+/* ── Activity panel (chopsticks agents) ─────────────────────────────── */
+
+#activity {
+  width: 360px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+#activity.hidden {
+  display: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-header .badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(97, 175, 239, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.panel-header .badge[data-lifecycle='exited'],
+.panel-header .badge[data-lifecycle='failed'] {
+  background: rgba(255, 139, 147, 0.18);
+  color: #ff8b93;
+}
+
+/* ── Errors ─────────────────────────────────────────────────────────── */
+
+.error-toast {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: #3d2325;
+  color: #ff8b93;
+  font: 12px var(--titlebar-font);
+  cursor: pointer;
+  z-index: 10;
+}

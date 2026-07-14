@@ -5,15 +5,38 @@
 // tsx so it can import workspace TS (and the avocado SDK's ESM) directly.
 
 import { build } from 'esbuild';
-import { cp, mkdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, realpath, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, 'dist');
 const shared = { bundle: true, sourcemap: true, logLevel: 'info' };
 
 await mkdir(dist, { recursive: true });
+
+// Ship avocado's JetBrains Mono Nerd Font set next to the renderer so restty's
+// Ghostty-parity loader can fetch them under CSP connect-src 'self'.
+// pnpm may nest the package; follow the symlink under node_modules.
+const avocadoFontCandidates = [
+  join(root, 'node_modules', '@vibecook', 'avocado-sdk', 'assets', 'fonts'),
+];
+try {
+  const linked = await realpath(join(root, 'node_modules', '@vibecook', 'avocado-sdk'));
+  avocadoFontCandidates.push(join(linked, 'assets', 'fonts'));
+} catch {
+  /* not linked */
+}
+const avocadoFonts = avocadoFontCandidates.find((p) => existsSync(p));
+if (!avocadoFonts) {
+  throw new Error(`avocado fonts not found; tried:\n${avocadoFontCandidates.join('\n')}`);
+}
+const distFonts = join(dist, 'fonts');
+await mkdir(distFonts, { recursive: true });
+for (const name of await readdir(avocadoFonts)) {
+  if (name.endsWith('.ttf')) await cp(join(avocadoFonts, name), join(distFonts, name));
+}
 
 await Promise.all([
   // Electron main: CommonJS (the conventional Electron main entry format).
@@ -50,15 +73,38 @@ await Promise.all([
     target: 'node20',
     external: ['electron'],
   }),
-  // Renderer: everything (xterm + css) bundled for the browser context.
+  // Renderer: React + avocado VirtualTerminal (engine=restty) + CSS.
+  // avocado's Ghostty-parity font loader tries Vite `*.ttf?url` then
+  // `new URL(.../assets/fonts/..., import.meta.url)`. Rewrite both to the
+  // fonts/ we copied into dist/ so fetch works under Electron file:// + CSP.
   build({
     ...shared,
-    entryPoints: [join(root, 'src/renderer/main.ts')],
+    entryPoints: [join(root, 'src/renderer/main.tsx')],
     outdir: dist,
     entryNames: 'renderer',
     platform: 'browser',
     format: 'esm',
     target: 'es2022',
+    jsx: 'automatic',
+    splitting: true,
+    plugins: [
+      {
+        name: 'avocado-fonts-to-dist',
+        setup(buildApi) {
+          buildApi.onResolve({ filter: /\.ttf(\?url)?$/ }, (args) => {
+            const file = args.path.replace(/^.*\//, '').replace(/\?url$/, '');
+            return { path: file, namespace: 'avocado-font' };
+          });
+          // Emit absolute file:// (or http) URL via import.meta.url so avocado's
+          // fetch(url) resolves next to the chunk in dist/, not a broken
+          // ../../assets path. Font files themselves are copied to dist/fonts/.
+          buildApi.onLoad({ filter: /.*/, namespace: 'avocado-font' }, (args) => ({
+            contents: `export default new URL(${JSON.stringify(`./fonts/${args.path}`)}, import.meta.url).href;`,
+            loader: 'js',
+          }));
+        },
+      },
+    ],
   }),
 ]);
 

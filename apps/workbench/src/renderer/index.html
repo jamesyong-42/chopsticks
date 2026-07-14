@@ -1,28 +1,23 @@
-<meta charset="utf-8" />
-<meta
-  http-equiv="Content-Security-Policy"
-  content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'none'"
-/>
-<title>chopsticks workbench</title>
-<link rel="stylesheet" href="./renderer.css" />
-<div id="app">
-  <header id="tabbar">
-    <div id="tabs"></div>
-    <div id="actions">
-      <button id="new-shell" type="button">+ shell</button>
-      <button id="new-fake-agent" type="button">+ fake agent</button>
-      <select id="claude-isolation" title="Workspace isolation for the next Claude session">
-        <option value="shared" selected>shared</option>
-        <option value="worktree">worktree</option>
-      </select>
-      <button id="new-claude" type="button">+ claude</button>
-      <button id="new-codex" type="button">+ codex</button>
-      <button id="new-grok" type="button">+ grok</button>
-    </div>
-  </header>
-  <main id="workarea">
-    <div id="terminals"></div>
-    <aside id="activity" class="hidden"></aside>
-  </main>
-</div>
-<script type="module" src="./renderer.js"></script>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      CSP notes for restty (libghostty-vt), matching avocado/apps/ghostty:
+      - script-src 'wasm-unsafe-eval' allows WebAssembly.instantiate
+      - font-src 'self' data: avocado bundles JetBrains Mono
+      - file: allows Electron file:// font fetch under dist/fonts
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: file:; connect-src 'self' file:"
+    />
+    <title>chopsticks</title>
+    <link rel="stylesheet" href="./renderer.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>
