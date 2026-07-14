@@ -242,6 +242,7 @@ export class ClaudePanel {
     events: AgentEventEnvelope[],
     workspace: WorkspacePanelData | undefined,
     exited: boolean,
+    canResume: boolean,
   ): void {
     if (runtimeSessionId !== this.shownSessionId) {
       this.shownSessionId = runtimeSessionId;
@@ -249,8 +250,9 @@ export class ClaudePanel {
       this.resetInject();
     }
     this.root.classList.remove('hidden');
-    // Resume is offered exactly on an exited Claude tab; a live tab hides it.
-    this.resumeBtn.classList.toggle('hidden', !exited);
+    // Resume is offered on an exited tab that has a resumable id (Claude
+    // --session-id, or a materialized Codex thread); a live tab hides it.
+    this.resumeBtn.classList.toggle('hidden', !(exited && canResume));
     this.renderState(msg);
     this.renderWorkspace(workspace);
     this.renderEvents(events);

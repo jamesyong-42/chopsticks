@@ -185,6 +185,12 @@ export interface AgentStateMessage {
 export interface CreateCodexSessionOptions {
   /** Working directory; defaults to the chopsticks repo root main-side. */
   cwd?: string;
+  /**
+   * Resume an existing Codex thread by id (`codex resume <id> --remote`). The
+   * resumed session is a NEW terminal tab that reopens the SAME thread (its
+   * history + rollout). The id is the thread id the observer reported.
+   */
+  resume?: string;
 }
 
 /**

@@ -154,6 +154,8 @@ class Workbench {
   private readonly claudeWorkspace = new Map<string, WorkspacePanelData>();
   /** The Claude `--session-id` UUID per Claude session (runtimeSessionId → sessionId), for resume. */
   private readonly claudeSessionId = new Map<string, string>();
+  /** The Codex thread id per Codex session (runtimeSessionId → threadId), for resume. */
+  private readonly codexThreadId = new Map<string, string>();
   /** Slow-poll timers refreshing the live diff, keyed by runtimeSessionId. */
   private readonly diffPollers = new Map<string, ReturnType<typeof setInterval>>();
   private activeId: string | undefined;
@@ -230,6 +232,12 @@ class Workbench {
       buf.push(envelope);
       if (buf.length > EVENT_TAIL_MAX) buf.splice(0, buf.length - EVENT_TAIL_MAX);
       this.claudeEvents.set(runtimeSessionId, buf);
+      // Codex resume needs the observed thread id — every envelope carries it as
+      // nativeSessionId. Capture it for codex tabs so an exited tab can resume.
+      const tab = this.tabs.get(runtimeSessionId);
+      if (tab?.agentKind === 'codex' && envelope.nativeSessionId) {
+        this.codexThreadId.set(runtimeSessionId, envelope.nativeSessionId);
+      }
       if (runtimeSessionId === this.activeId) touchedActive = true;
     }
     if (touchedActive) this.refreshPanel();
@@ -250,7 +258,10 @@ class Workbench {
       // Codex sessions have no workspace (Model B observes a native TUI), so pass
       // undefined — the panel then shows the agent state without a workspace section.
       const workspace = tab.agentKind === 'claude' ? this.claudeWorkspace.get(id) : undefined;
-      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], workspace, tab.exited);
+      // Resume is possible only once the session has a resumable id: a Claude
+      // `--session-id`, or a materialized Codex thread id.
+      const canResume = tab.agentKind === 'claude' ? this.claudeSessionId.has(id) : this.codexThreadId.has(id);
+      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], workspace, tab.exited, canResume);
     } else {
       this.panel.hide();
     }
@@ -361,6 +372,35 @@ class Workbench {
     await this.startClaude({ resume: sessionId, workspace }, 'claude ⟲', note);
   }
 
+  /** Panel Resume dispatch: Claude and Codex resume differently. */
+  async resumeAgent(runtimeSessionId: string): Promise<void> {
+    const tab = this.tabs.get(runtimeSessionId);
+    if (tab?.agentKind === 'codex') return this.resumeCodex(runtimeSessionId);
+    return this.resumeClaude(runtimeSessionId);
+  }
+
+  /**
+   * Resume an EXITED Codex tab as a NEW tab that reopens the same thread
+   * (`codex resume <id> --remote`, its history + rollout intact). Needs a
+   * materialized thread id (captured from the observed stream).
+   */
+  async resumeCodex(runtimeSessionId: string): Promise<void> {
+    const threadId = this.codexThreadId.get(runtimeSessionId);
+    if (!threadId) return; // never materialized — nothing to resume
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    const tab = this.makeTab(tempId, 'codex ⟲', 'codex');
+    this.activateTab(tab);
+    tab.refit();
+    try {
+      const result = await chopsticks.createCodexSession({ resume: threadId });
+      this.rebind(tab, tempId, result.runtimeSessionId);
+      this.flushPending(tab);
+      this.refreshPanel();
+    } catch (err) {
+      tab.markExited(err instanceof Error ? err.message : 'spawn failed');
+    }
+  }
+
   /** Shared spawn+wire path for a new or resumed Claude session. */
   private async startClaude(opts: CreateClaudeSessionOptions, title: string, note?: string): Promise<void> {
     const tempId = `pending-${Math.random().toString(36).slice(2)}`;
@@ -432,6 +472,7 @@ class Workbench {
     this.claudeEvents.delete(sessionId);
     this.claudeWorkspace.delete(sessionId);
     this.claudeSessionId.delete(sessionId);
+    this.codexThreadId.delete(sessionId);
     this.stopDiffPoll(sessionId);
     if (this.activeId === sessionId) {
       this.activeId = undefined;
@@ -456,7 +497,7 @@ let workbench: Workbench;
 const panel = new ClaudePanel(
   activityEl,
   (runtimeSessionId, text) => chopsticks.submitPrompt({ runtimeSessionId, text }),
-  (runtimeSessionId) => void workbench.resumeClaude(runtimeSessionId),
+  (runtimeSessionId) => void workbench.resumeAgent(runtimeSessionId),
 );
 workbench = new Workbench(tabsEl, panesEl, panel);
 document

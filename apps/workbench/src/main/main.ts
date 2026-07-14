@@ -594,11 +594,16 @@ async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): P
     throw err;
   }
 
+  // Resume reopens the SAME thread (`codex resume <id> --remote`); otherwise a
+  // fresh `codex --remote` TUI (the thread appears on the first prompt).
+  const remoteAddr = `unix://${server.socketPath}`;
+  const args = opts.resume ? ['resume', opts.resume, '--remote', remoteAddr] : ['--remote', remoteAddr];
+
   let runtimeSessionId: string;
   try {
     const { sessionId: remoteId } = await transport.requestSpawn({
       command: CODEX_BIN,
-      args: ['--remote', `unix://${server.socketPath}`],
+      args,
       cwd: opts.cwd ?? repoRoot,
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
