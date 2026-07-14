@@ -638,22 +638,41 @@ function registerIpc(): void {
   });
   ipcMain.handle('chopsticks:submitPrompt', async (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
     const claude = claudeSessions.get(opts.runtimeSessionId);
-    // No session → nothing was injected and there is no sessionId to join on, so
-    // there is no own-action to record; the synthetic rejection just informs the UI.
-    if (!claude) return { status: 'rejected', reason: 'no such claude session' };
-    const receipt = await claude.submitPrompt({ text: opts.text });
-    // Record the honest injection receipt (DESIGN §17): `uncertain` rides through as
-    // itself, never collapsed. reason/turnId live on distinct arms of the receipt union.
-    void recorder.record({
-      type: 'injection',
-      sessionId: claude.sessionId,
-      runtimeSessionId: opts.runtimeSessionId,
-      text: opts.text,
-      outcome: receipt.status,
-      reason: 'reason' in receipt ? receipt.reason : undefined,
-      turnId: 'turnId' in receipt ? receipt.turnId : undefined,
-    });
-    return receipt;
+    if (claude) {
+      const receipt = await claude.submitPrompt({ text: opts.text });
+      // Record the honest injection receipt (DESIGN §17): `uncertain` rides through as
+      // itself, never collapsed. reason/turnId live on distinct arms of the receipt union.
+      void recorder.record({
+        type: 'injection',
+        sessionId: claude.sessionId,
+        runtimeSessionId: opts.runtimeSessionId,
+        text: opts.text,
+        outcome: receipt.status,
+        reason: 'reason' in receipt ? receipt.reason : undefined,
+        turnId: 'turnId' in receipt ? receipt.turnId : undefined,
+      });
+      return receipt;
+    }
+    // Codex: drive the native TUI the same way as Claude — bracketed-paste the
+    // prompt into its terminal and submit. Verified to record the CLEAN text on
+    // the thread (no escape markers); the observer surfaces the resulting turn.
+    // A DIRECT manager write (not chopsticks:write), so it is never mistaken for a
+    // human keystroke. Confirmation is the turn appearing in the observed stream.
+    const codex = codexSessions.get(opts.runtimeSessionId);
+    if (codex) {
+      manager.write(opts.runtimeSessionId, Buffer.from(`\x1b[200~${opts.text}\x1b[201~\r`, 'utf8'));
+      void recorder.record({
+        type: 'injection',
+        sessionId: codex.observer.sessionId ?? `codex-pending:${opts.runtimeSessionId}`,
+        runtimeSessionId: opts.runtimeSessionId,
+        text: opts.text,
+        outcome: 'confirmed',
+      });
+      return { status: 'confirmed' };
+    }
+    // No session → nothing was injected and no sessionId to join on; the synthetic
+    // rejection just informs the UI.
+    return { status: 'rejected', reason: 'no such session' };
   });
   ipcMain.handle('chopsticks:write', (_e, sessionId: string, dataBase64: string) => {
     // User priority (DESIGN §17.2): a real keystroke on a Claude terminal must
