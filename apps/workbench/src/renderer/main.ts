@@ -56,8 +56,8 @@ class TerminalTab {
   /** False until history has been restored, so live chunks buffer first. */
   ready = false;
   exited = false;
-  /** Claude tabs get the activity panel; plain terminals do not. */
-  isClaude = false;
+  /** Agent tabs (claude/codex) get the activity panel; plain terminals do not. */
+  agentKind: 'claude' | 'codex' | undefined = undefined;
 
   constructor(
     public sessionId: string,
@@ -207,7 +207,7 @@ class Workbench {
     if (event.runtimeSessionId === this.activeId) this.refreshPanel();
   }
 
-  private makeTab(sessionId: string, title: string, isClaude = false): TerminalTab {
+  private makeTab(sessionId: string, title: string, agentKind?: 'claude' | 'codex'): TerminalTab {
     const tab = new TerminalTab(
       sessionId,
       title,
@@ -216,7 +216,7 @@ class Workbench {
       (id) => this.activate(id),
       (id) => void this.close(id),
     );
-    tab.isClaude = isClaude;
+    tab.agentKind = agentKind;
     this.tabs.set(sessionId, tab);
     this.tabsEl.append(tab.button);
     this.panesEl.append(tab.pane);
@@ -246,14 +246,11 @@ class Workbench {
   private refreshPanel(): void {
     const id = this.activeId;
     const tab = id ? this.tabs.get(id) : undefined;
-    if (id && tab?.isClaude) {
-      this.panel.render(
-        id,
-        this.claudeState.get(id),
-        this.claudeEvents.get(id) ?? [],
-        this.claudeWorkspace.get(id),
-        tab.exited,
-      );
+    if (id && tab?.agentKind) {
+      // Codex sessions have no workspace (Model B observes a native TUI), so pass
+      // undefined — the panel then shows the agent state without a workspace section.
+      const workspace = tab.agentKind === 'claude' ? this.claudeWorkspace.get(id) : undefined;
+      this.panel.render(id, this.claudeState.get(id), this.claudeEvents.get(id) ?? [], workspace, tab.exited);
     } else {
       this.panel.hide();
     }
@@ -314,6 +311,27 @@ class Workbench {
   }
 
   /**
+   * Start a Codex session (M5 C6, Model B): the tab is a native `codex --remote`
+   * terminal (the user drives it); an observer in main watches the same
+   * app-server and feeds this tab's activity panel. No workspace, no injection —
+   * the terminal IS the input.
+   */
+  async newCodexSession(): Promise<void> {
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    const tab = this.makeTab(tempId, 'codex', 'codex');
+    this.activateTab(tab);
+    tab.refit();
+    try {
+      const result = await chopsticks.createCodexSession({});
+      this.rebind(tab, tempId, result.runtimeSessionId);
+      this.flushPending(tab);
+      this.refreshPanel();
+    } catch (err) {
+      tab.markExited(err instanceof Error ? err.message : 'spawn failed');
+    }
+  }
+
+  /**
    * Resume an EXITED Claude tab as a NEW tab that keeps the same Claude session +
    * transcript (`--resume`). Resume always reuses the original directory as a
    * SHARED workspace — main never re-materializes a worktree. For a worktree
@@ -346,7 +364,7 @@ class Workbench {
   /** Shared spawn+wire path for a new or resumed Claude session. */
   private async startClaude(opts: CreateClaudeSessionOptions, title: string, note?: string): Promise<void> {
     const tempId = `pending-${Math.random().toString(36).slice(2)}`;
-    const tab = this.makeTab(tempId, title, true);
+    const tab = this.makeTab(tempId, title, 'claude');
     this.activateTab(tab);
     tab.refit();
     try {
@@ -452,5 +470,6 @@ document.getElementById('new-claude')?.addEventListener('click', () => {
   const isolation = isolationSelect?.value === 'worktree' ? 'worktree' : 'shared';
   void workbench.newClaudeSession(isolation);
 });
+document.getElementById('new-codex')?.addEventListener('click', () => void workbench.newCodexSession());
 
 void workbench.restore();

@@ -38,6 +38,13 @@ import {
   type UDSServer,
 } from '@vibecook/avocado-sdk/transport-ipc';
 import { createClaudeSession, type ClaudeSession } from '@vibecook/chopsticks-adapter-claude';
+import {
+  createCodexObserver,
+  spawnAppServer,
+  wsOverUnixTransport,
+  type AppServerHandle,
+  type CodexObserver,
+} from '@vibecook/chopsticks-adapter-codex';
 import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-record';
 import type { AgentEventEnvelope, SessionRuntimeState } from '@vibecook/chopsticks-core';
 import {
@@ -50,8 +57,10 @@ import {
 import type {
   AgentEventMessage,
   ChunkEvent,
+  CodexSessionInfo,
   CreateClaudeSessionOptions,
   CreateClaudeSessionResult,
+  CreateCodexSessionOptions,
   CreateSessionOptions,
   ExitEvent,
   PromptReceipt,
@@ -137,6 +146,20 @@ const claudeSessionIds = new Map<string, string>();
 // down on exit, and never forcibly when dirty (uncommitted work is kept).
 const activeWorkspaces = new Map<string, Workspace>();
 
+// --- Codex session state --------------------------------------------------
+// A Codex session (M5 C6, Model B) is a native `codex --remote` PTY (the tab,
+// keyed by runtimeSessionId like every other terminal) PLUS a structured
+// observer over its own app-server. The observer feeds the SAME agent
+// channels as Claude — the user drives the native TUI, chopsticks observes.
+interface CodexRuntime {
+  observer: CodexObserver;
+  server: AppServerHandle;
+}
+const codexSessions = new Map<string, CodexRuntime>();
+// `codex` resolves via the pty-host's inherited PATH (fine when the workbench is
+// launched from a shell); override with an absolute path for a bundled .app.
+const CODEX_BIN = process.env.CHOPSTICKS_CODEX_BIN ?? 'codex';
+
 // Own-action record (DESIGN §22.1): the append-only JSONL log of what the runtime
 // itself did — injections, workspace finals, exit classifications, policy
 // conflicts. One module-level recorder, default ~/.chopsticks/own-actions.jsonl.
@@ -187,12 +210,16 @@ function startHub(): void {
 
 /** Spawn the pty-host child under system Node via tsx, pointed at the socket. */
 function spawnPtyHost(socket: string): void {
-  ptyHost = spawn(process.env.CHOPSTICKS_NODE_BIN ?? 'node', [resolveTsxCli(), path.join(appRoot, 'src', 'pty-host', 'main.ts')], {
-    cwd: appRoot,
-    // No stdio protocol anymore (avocado owns the socket); inherit for diagnostics.
-    stdio: ['ignore', 'inherit', 'inherit'],
-    env: { ...process.env, CHOPSTICKS_SOCKET: socket },
-  });
+  ptyHost = spawn(
+    process.env.CHOPSTICKS_NODE_BIN ?? 'node',
+    [resolveTsxCli(), path.join(appRoot, 'src', 'pty-host', 'main.ts')],
+    {
+      cwd: appRoot,
+      // No stdio protocol anymore (avocado owns the socket); inherit for diagnostics.
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env: { ...process.env, CHOPSTICKS_SOCKET: socket },
+    },
+  );
   ptyHost.on('exit', (code) => {
     process.stderr.write(`[main] pty-host exited (code ${code ?? 'null'})\n`);
   });
@@ -206,6 +233,12 @@ function disposeHub(): void {
   // its hook bridge + transcript observer and cleans the generated settings file.
   for (const claude of claudeSessions.values()) void claude.dispose().catch(() => undefined);
   claudeSessions.clear();
+  // Codex sessions: stop each observer and its private app-server.
+  for (const { observer, server } of codexSessions.values()) {
+    void observer.dispose().catch(() => undefined);
+    server.dispose();
+  }
+  codexSessions.clear();
   ptyHost?.kill('SIGTERM');
   ptyHost = undefined;
   bridge.dispose();
@@ -264,6 +297,14 @@ function forwardExit(exit: ExitEvent): void {
     });
     claudeSessions.delete(exit.sessionId);
     void claude.dispose().catch(() => undefined);
+  }
+  // A Codex session's `codex --remote` PTY exited: tear down its observer and its
+  // private app-server (the terminal is gone, so this is observation cleanup).
+  const codex = codexSessions.get(exit.sessionId);
+  if (codex) {
+    codexSessions.delete(exit.sessionId);
+    void codex.observer.dispose().catch(() => undefined);
+    codex.server.dispose();
   }
   // Finalize the session's workspace: record its final diff, push the metadata,
   // and (worktree only) remove the worktree — retaining it if it is dirty.
@@ -415,12 +456,13 @@ function flushAgentEvents(): void {
   mainWindow?.webContents.send('chopsticks:agentEvents', batch);
   const touched = new Set(batch.map((m) => m.runtimeSessionId));
   for (const runtimeSessionId of touched) {
-    const claude = claudeSessions.get(runtimeSessionId);
-    if (!claude) continue;
+    // Both a Claude session and a Codex observer expose state()/observationLevel().
+    const source = claudeSessions.get(runtimeSessionId) ?? codexSessions.get(runtimeSessionId)?.observer;
+    if (!source) continue;
     mainWindow?.webContents.send('chopsticks:agentState', {
       runtimeSessionId,
-      state: serializeState(claude.state()),
-      observationLevel: claude.observationLevel(),
+      state: serializeState(source.state()),
+      observationLevel: source.observationLevel(),
     });
   }
 }
@@ -533,10 +575,62 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
   };
 }
 
+/**
+ * Start a Codex session (M5 C6, Model B). Unlike Claude (one PTY observed via
+ * hooks), a Codex session is: (1) a private `codex app-server` on a unix socket,
+ * (2) a native `codex --remote` TUI in a PTY — the terminal tab, spawned through
+ * the SAME avocado transport as every other session, and (3) a structured
+ * observer over the app-server that attaches to whatever thread the TUI creates
+ * and feeds the agent channels. The user drives the terminal; chopsticks watches.
+ */
+async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> {
+  const transport = hostTransport ?? (await transportReady);
+
+  const server = spawnAppServer({ executable: CODEX_BIN });
+  try {
+    await server.ready();
+  } catch (err) {
+    server.dispose();
+    throw err;
+  }
+
+  let runtimeSessionId: string;
+  try {
+    const { sessionId: remoteId } = await transport.requestSpawn({
+      command: CODEX_BIN,
+      args: ['--remote', `unix://${server.socketPath}`],
+      cwd: opts.cwd ?? repoRoot,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+    });
+    runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
+  } catch (err) {
+    server.dispose();
+    throw err;
+  }
+
+  const observer = await createCodexObserver({ transport: wsOverUnixTransport(server.socketPath) }).catch((err) => {
+    server.dispose();
+    throw err;
+  });
+  observer.onEvent((envelope: AgentEventEnvelope) => {
+    agentEventBatch.push({ runtimeSessionId, envelope });
+    scheduleAgentFlush();
+  });
+  codexSessions.set(runtimeSessionId, { observer, server });
+
+  const info = manager.getSessionInfo(runtimeSessionId);
+  if (!info) throw new Error(`codex session ${runtimeSessionId} not registered in manager`);
+  return { runtimeSessionId, descriptor: infoToDescriptor(info), threadId: observer.sessionId };
+}
+
 function registerIpc(): void {
   ipcMain.handle('chopsticks:createSession', (_e, opts: CreateSessionOptions) => createSession(opts));
   ipcMain.handle('chopsticks:createClaudeSession', (_e, opts: CreateClaudeSessionOptions) =>
     createClaudeSessionForRenderer(opts ?? {}),
+  );
+  ipcMain.handle('chopsticks:createCodexSession', (_e, opts: CreateCodexSessionOptions) =>
+    createCodexSessionForRenderer(opts ?? {}),
   );
   ipcMain.handle('chopsticks:workspaceDiff', (_e, runtimeSessionId: string) => {
     const workspace = activeWorkspaces.get(runtimeSessionId);

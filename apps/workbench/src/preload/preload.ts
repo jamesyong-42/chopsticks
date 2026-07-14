@@ -12,8 +12,10 @@ import type {
   AgentStateMessage,
   ChopsticksBridge,
   ChunkEvent,
+  CodexSessionInfo,
   CreateClaudeSessionOptions,
   CreateClaudeSessionResult,
+  CreateCodexSessionOptions,
   CreateSessionOptions,
   ExitEvent,
   PromptReceipt,
@@ -46,6 +48,8 @@ const bridge: ChopsticksBridge = {
   },
   createClaudeSession: (opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> =>
     ipcRenderer.invoke('chopsticks:createClaudeSession', opts),
+  createCodexSession: (opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> =>
+    ipcRenderer.invoke('chopsticks:createCodexSession', opts),
   submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
     ipcRenderer.invoke('chopsticks:submitPrompt', opts),
   onAgentEvents: (cb: (events: AgentEventMessage[]) => void): (() => void) => {

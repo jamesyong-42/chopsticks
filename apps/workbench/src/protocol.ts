@@ -179,6 +179,28 @@ export interface AgentStateMessage {
   observationLevel: ObservationLevel;
 }
 
+// ───────────────────────── Codex session surface ──────────────────────────
+
+/** Renderer-visible options for starting a Codex session (native TUI + observer). */
+export interface CreateCodexSessionOptions {
+  /** Working directory; defaults to the chopsticks repo root main-side. */
+  cwd?: string;
+}
+
+/**
+ * What `createCodexSession` returns. A Codex session is a native `codex --remote`
+ * terminal (runtimeSessionId = the PTY id, sharing the chunk/write/exit surface)
+ * PLUS a structured observer in main that feeds the SAME agentEvents/agentState
+ * channels (Model B: the user drives the native TUI, chopsticks observes over the
+ * app-server). `threadId` is the Codex thread id (the spaghetti join) once the
+ * observer attaches — undefined at creation (the thread appears on first prompt).
+ */
+export interface CodexSessionInfo {
+  runtimeSessionId: string;
+  descriptor: SessionDescriptor;
+  threadId?: string;
+}
+
 /** Programmatic prompt injection request (DESIGN §17); text is pasted verbatim then submitted. */
 export interface SubmitPromptOptions {
   runtimeSessionId: string;
@@ -207,6 +229,9 @@ export interface ChopsticksBridge {
   onExit(cb: (exit: ExitEvent) => void): () => void;
   // Claude session surface (driver lives in main; renderer sees snapshots only).
   createClaudeSession(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult>;
+  // Codex session surface: a native `codex --remote` terminal + a structured
+  // observer in main (shares the agentEvents/agentState channels above).
+  createCodexSession(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo>;
   submitPrompt(opts: SubmitPromptOptions): Promise<PromptReceipt>;
   onAgentEvents(cb: (events: AgentEventMessage[]) => void): () => void;
   onAgentState(cb: (state: AgentStateMessage) => void): () => void;
