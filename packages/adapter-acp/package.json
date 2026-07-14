@@ -1,0 +1,36 @@
+{
+  "name": "@vibecook/chopsticks-adapter-acp",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Generic Agent Client Protocol (ACP) adapter: structured driver over the official @agentclientprotocol/sdk — session/update normalizer, session driver, deterministic session/prompt injection. First agent: Grok (grok agent stdio).",
+  "license": "MIT",
+  "author": "James Yong",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.2.1",
+    "@vibecook/chopsticks-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@vibecook/chopsticks-testing": "workspace:*"
+  }
+}
