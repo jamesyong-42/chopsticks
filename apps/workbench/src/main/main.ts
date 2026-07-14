@@ -744,9 +744,14 @@ async function createGrokSessionForRenderer(opts: CreateGrokSessionOptions): Pro
   const grokSessionId = opts.resume ?? randomUUID();
 
   // 1. Native TUI FIRST — it creates (or reopens) the session and renders it.
+  //    `--leader` is REQUIRED: without it the TUI runs standalone (its own
+  //    backend) and never joins our leader, so injection from the ACP control
+  //    client wouldn't reach it. With it, the TUI and the ACP client share ONE
+  //    live session on our leader. (The TUI hides `--leader` from --help, but it
+  //    is accepted; the alternative is `[cli] use_leader = true` in config.)
   const tuiArgs = opts.resume
-    ? ['--leader-socket', socketPath, '--resume', grokSessionId]
-    : ['--leader-socket', socketPath, '--session-id', grokSessionId];
+    ? ['--leader', '--leader-socket', socketPath, '--resume', grokSessionId]
+    : ['--leader', '--leader-socket', socketPath, '--session-id', grokSessionId];
   const { sessionId: remoteId } = await transport.requestSpawn({
     command: GROK_BIN,
     args: tuiArgs,
