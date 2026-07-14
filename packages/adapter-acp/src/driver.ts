@@ -196,7 +196,14 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
       throw new Error('ACP agent does not support session/load — cannot resume');
     }
     sessionId = options.resume;
-    await conn.agent.loadSession({ sessionId: options.resume, cwd: options.cwd, mcpServers: [] });
+    try {
+      await conn.agent.loadSession({ sessionId: options.resume, cwd: options.cwd, mcpServers: [] });
+    } catch (err) {
+      // Close the transport so a caller retrying resume (e.g. attaching to a
+      // session another client is still registering) doesn't leak a subprocess.
+      conn.close();
+      throw err;
+    }
   } else {
     const res = await conn.agent.newSession({ cwd: options.cwd, mcpServers: [] });
     sessionId = res.sessionId;

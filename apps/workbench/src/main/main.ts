@@ -19,6 +19,7 @@
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
@@ -187,9 +188,15 @@ async function ensureGrokLeader(): Promise<string> {
   // macOS /tmp is a symlink the agent's socket bind rejects — use the real tmp.
   const dir = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'chopsticks-grok-'));
   const socketPath = path.join(dir, 'leader.sock');
-  const child = spawn(GROK_BIN, ['agent', 'leader', '--no-exit-on-disconnect', '--leader-socket', socketPath], {
-    stdio: 'ignore',
-  });
+  // `--relay-on-demand`: we're an interactive client, so defer the grok.com
+  // relay until (if ever) a headless client appears — otherwise the leader
+  // eagerly opens the relay at startup (a network+auth round-trip we don't need,
+  // which can also pull remote/queued prompts into the session).
+  const child = spawn(
+    GROK_BIN,
+    ['agent', 'leader', '--no-exit-on-disconnect', '--relay-on-demand', '--leader-socket', socketPath],
+    { stdio: 'ignore' },
+  );
   for (let i = 0; i < 80 && !existsSync(socketPath); i++) await new Promise((r) => setTimeout(r, 250));
   if (!existsSync(socketPath)) {
     try {
@@ -697,49 +704,77 @@ async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): P
   return { runtimeSessionId, descriptor: infoToDescriptor(info), threadId: observer.sessionId };
 }
 
+/** Attach an ACP control client to an EXISTING leader session, retrying while
+ *  the TUI is still registering it (loadSession 404s until then). */
+async function attachGrokControl(cwd: string, socketPath: string, sessionId: string): Promise<AcpSession> {
+  const leaderArgs = ['agent', '--leader', '--leader-socket', socketPath, 'stdio'];
+  let lastErr: unknown;
+  for (let i = 0; i < 15; i++) {
+    try {
+      return await createAcpSession({ cwd, executable: GROK_BIN, args: leaderArgs, resume: sessionId });
+    } catch (err) {
+      lastErr = err; // a failed loadSession closes its own transport (adapter)
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('grok ACP control attach failed');
+}
+
 /**
- * Start a Grok session (M6 A6c, native-TUI + leader coexistence). Unlike Codex
- * (app-server observer), Grok speaks ACP: (1) a shared `grok agent leader`, (2)
- * our ACP control client (`createAcpSession` over `grok agent --leader … stdio`)
- * which creates — or resumes — the session and mints its id, and (3) a native
- * `grok` TUI in a PTY attached to that SAME session on the leader
- * (`grok --leader-socket <sock> --resume <id>`). The ACP client observes AND
- * injects deterministically (`session/prompt`); the TUI renders. Ordering
- * matters: our client creates first so the TUI can attach by the minted id
- * (there is no ACP `session/list` to discover it — verified by probe).
+ * Start a Grok session (M6 A6c, native-TUI + leader coexistence). Grok speaks
+ * ACP over a shared `grok agent leader`, and the tab is a native `grok` TUI in a
+ * PTY on that leader while our ACP control client (`grok agent --leader … stdio`)
+ * observes AND injects deterministically (`session/prompt`) on the SAME session.
+ *
+ * The TUI goes FIRST and OWNS session creation (`--session-id <uuid>` for a new
+ * tab, `--resume <id>` for a resumed one): that shows the normal welcome and
+ * fires `session_start` exactly once — creating via ACP then resuming in the TUI
+ * skipped the welcome and doubled the hook. It also means the terminal appears
+ * after ONE grok boot, not three. The ACP client then ATTACHES (loadSession) —
+ * which fires no second `session_start` — retrying until the TUI has registered
+ * the session on the leader (there is no ACP `session/list` to discover it).
  */
 async function createGrokSessionForRenderer(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> {
   const transport = hostTransport ?? (await transportReady);
   const cwd = opts.cwd ?? repoRoot;
   const socketPath = await ensureGrokLeader();
 
-  // 1. ACP control client through the leader — creates (or loads) the session.
-  const leaderArgs = ['agent', '--leader', '--leader-socket', socketPath, 'stdio'];
-  const session = await createAcpSession({ cwd, executable: GROK_BIN, args: leaderArgs, resume: opts.resume });
-  const grokSessionId = session.sessionId;
+  // We own the id and hand it to BOTH clients. A fresh tab dictates a new id to
+  // the TUI (`--session-id`, a NEW conversation → welcome); resume reopens it.
+  const grokSessionId = opts.resume ?? randomUUID();
 
-  // 2. Native TUI PTY attached to the SAME leader + session (the terminal tab).
-  const args = ['--leader-socket', socketPath, '--resume', grokSessionId];
-  let runtimeSessionId: string;
-  try {
-    const { sessionId: remoteId } = await transport.requestSpawn({
-      command: GROK_BIN,
-      args,
-      cwd,
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
-    });
-    runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
-  } catch (err) {
-    await session.dispose().catch(() => undefined);
-    throw err;
-  }
-
-  session.onEvent((envelope: AgentEventEnvelope) => {
-    agentEventBatch.push({ runtimeSessionId, envelope });
-    scheduleAgentFlush();
+  // 1. Native TUI FIRST — it creates (or reopens) the session and renders it.
+  const tuiArgs = opts.resume
+    ? ['--leader-socket', socketPath, '--resume', grokSessionId]
+    : ['--leader-socket', socketPath, '--session-id', grokSessionId];
+  const { sessionId: remoteId } = await transport.requestSpawn({
+    command: GROK_BIN,
+    args: tuiArgs,
+    cwd,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
   });
-  grokSessions.set(runtimeSessionId, { session });
+  const runtimeSessionId = createNamespacedId('ipc', transport.transportId, remoteId);
+
+  // 2. ACP control client ATTACHES to that same session on the leader (observe +
+  //    inject), retrying while the TUI registers it. Non-fatal: if it never
+  //    attaches, the terminal still works, just without the activity panel.
+  attachGrokControl(cwd, socketPath, grokSessionId)
+    .then((session) => {
+      if (!manager.getSessionInfo(runtimeSessionId)) {
+        // The tab already exited before control attached — don't leak it.
+        void session.dispose().catch(() => undefined);
+        return;
+      }
+      session.onEvent((envelope: AgentEventEnvelope) => {
+        agentEventBatch.push({ runtimeSessionId, envelope });
+        scheduleAgentFlush();
+      });
+      grokSessions.set(runtimeSessionId, { session });
+    })
+    .catch((err) => {
+      hubEvents.emit('grok-control-error', { runtimeSessionId, error: err });
+    });
 
   const info = manager.getSessionInfo(runtimeSessionId);
   if (!info) throw new Error(`grok session ${runtimeSessionId} not registered in manager`);
