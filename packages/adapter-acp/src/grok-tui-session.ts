@@ -69,6 +69,71 @@ async function attachControl(
   throw lastErr instanceof Error ? lastErr : new Error('grok ACP control attach failed');
 }
 
+/**
+ * The pending-control session wrapper (extracted for testing). The native TUI is
+ * up (id + terminal) but the ACP control client attaches asynchronously via
+ * `attach()`; until it lands the session is usable but "starting":
+ * - `onEvent` listeners buffer and are forwarded once control attaches,
+ * - `submitPrompt` awaits the attach then delegates (rejects if it never lands),
+ * - `state()` reports the initial reducer state until control's is available,
+ * - `dispose()` before attach cancels the eventual control client.
+ */
+export function createPendingControlSession(
+  sessionId: string,
+  runtimeSessionId: string,
+  attach: () => Promise<AgentSession>,
+): AgentSession {
+  const listeners = new Set<(e: AgentEventEnvelope) => void>();
+  let control: AgentSession | undefined;
+  let disposed = false;
+  const observation: ObservationLevel = 'structured';
+
+  const controlReady = attach().then((acp) => {
+    if (disposed) {
+      void acp.dispose().catch(() => undefined);
+      return undefined;
+    }
+    control = acp;
+    acp.onEvent((envelope) => {
+      for (const l of listeners) {
+        try {
+          l(envelope);
+        } catch {
+          /* listener faults stay out of the pipeline */
+        }
+      }
+    });
+    return acp;
+  });
+  controlReady.catch(() => undefined); // unhandled-rejection guard; surfaced via submitPrompt
+
+  return {
+    sessionId,
+    runtimeSessionId,
+    state: (): SessionRuntimeState => control?.state() ?? createInitialSessionState(),
+    observationLevel: () => observation,
+    onEvent(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
+      // `.catch` here (not just the guard above): if the attach REJECTED,
+      // awaiting the raw promise would throw — we want a `rejected` receipt.
+      const acp = control ?? (await controlReady.catch(() => undefined));
+      if (!acp) return { status: 'rejected', reason: 'grok control client not attached' };
+      return acp.submitPrompt(submission);
+    },
+    notifyUserInput() {
+      /* the user drives the native TUI directly; nothing to arbitrate here */
+    },
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (control) await control.dispose().catch(() => undefined);
+    },
+  };
+}
+
 export function createGrokBackend(opts: CreateGrokBackendOptions): GrokBackend {
   const executable = opts.executable ?? 'grok';
   const host = opts.host;
@@ -113,55 +178,11 @@ export function createGrokBackend(opts: CreateGrokBackendOptions): GrokBackend {
       const { runtimeSessionId } = await host.spawnTerminal({ command: executable, args: tuiArgs, cwd });
 
       // The control client attaches asynchronously so the terminal is never
-      // blocked on it. Until it lands, the session is usable (id + terminal) with
-      // a "starting" state; onEvent listeners buffer and bind on attach.
-      const listeners = new Set<(e: AgentEventEnvelope) => void>();
-      let control: AgentSession | undefined;
-      let disposed = false;
-      const observation: ObservationLevel = 'structured';
-
-      const controlReady = attachControl(executable, cwd, socketPath, sessionId).then((acp) => {
-        if (disposed) {
-          void acp.dispose().catch(() => undefined);
-          return undefined;
-        }
-        control = acp;
-        acp.onEvent((envelope) => {
-          for (const l of listeners) {
-            try {
-              l(envelope);
-            } catch {
-              /* listener faults stay out of the pipeline */
-            }
-          }
-        });
-        return acp;
-      });
-      controlReady.catch(() => undefined); // unhandled-rejection guard; surfaced via submitPrompt
-
-      return {
-        sessionId,
-        runtimeSessionId,
-        state: (): SessionRuntimeState => control?.state() ?? createInitialSessionState(),
-        observationLevel: () => observation,
-        onEvent(listener) {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-        async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
-          const acp = control ?? (await controlReady);
-          if (!acp) return { status: 'rejected', reason: 'grok control client not attached' };
-          return acp.submitPrompt(submission);
-        },
-        notifyUserInput() {
-          /* the user drives the native TUI directly; nothing to arbitrate here */
-        },
-        async dispose() {
-          if (disposed) return;
-          disposed = true;
-          if (control) await control.dispose().catch(() => undefined);
-        },
-      };
+      // blocked on it. The returned session is usable immediately (id + terminal),
+      // buffers onEvent listeners, and binds them once control lands.
+      return createPendingControlSession(sessionId, runtimeSessionId, () =>
+        attachControl(executable, cwd, socketPath, sessionId),
+      );
     },
 
     dispose(): void {
