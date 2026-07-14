@@ -11,3 +11,4 @@ export * from './normalizer.js';
 export * from './app-server-client.js';
 export * from './ws-transport.js';
 export * from './driver.js';
+export * from './observer.js';
