@@ -68,6 +68,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
   let currentTurnId: string | undefined;
   let attached = false;
   let attaching = false;
+  let disposed = false;
   const observation: ObservationLevel = 'structured';
   const listeners = new Set<(e: AgentEventEnvelope) => void>();
   const threadListeners = new Set<(info: CodexThreadInfo) => void>();
@@ -98,20 +99,25 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
     attaching = true;
     sessionId = threadId;
     threadPath = str(thread?.path);
-    // A thread isn't materialized (no rollout) until its FIRST user message, so
-    // thread/resume errors ("no rollout found") right after thread/started. Retry
-    // until it takes — the first turn materializes it within a moment. (Observe
-    // from attach; a partial first turn is acceptable, later turns are complete.)
-    for (let i = 0; i < 60 && !attached; i++) {
+    // A thread isn't materialized (no rollout) until its first turn produces
+    // output, and that turn can outlast any fixed window — the model may be slow,
+    // MCP servers may still be starting, or a blocking TUI prompt (model-switch /
+    // rate-limit / approval) may hold the turn back. So retry until it takes, the
+    // connection drops, or we're disposed. A bounded one-shot window here was the
+    // "stuck at preparing, no messages" bug: a slow first turn missed it and
+    // nothing re-armed attach, so the session never observed anything.
+    let delay = 200;
+    while (!attached && !disposed) {
       try {
         await client.request('thread/resume', { threadId }); // history + opens the live stream
         attached = true;
       } catch {
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(Math.floor(delay * 1.5), 2000);
       }
     }
     if (!attached) {
-      attaching = false; // gave up; a later thread/started may retry
+      attaching = false; // disposed before the thread ever materialized
       return;
     }
     apply({ type: 'session.started', nativeSessionId: threadId }, 'native-hook');
@@ -136,6 +142,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
   });
 
   client.onClose(() => {
+    disposed = true; // let any in-flight attach retry loop exit
     if (attached) apply({ type: 'process.exited', reason: 'signal' }, 'runtime');
   });
 
@@ -158,6 +165,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
       return () => threadListeners.delete(listener);
     },
     async dispose() {
+      disposed = true; // stop the attach retry loop if it is still running
       client.close();
     },
   };
