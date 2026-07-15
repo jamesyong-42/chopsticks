@@ -1,23 +1,21 @@
 /**
- * Agent activity panel (DESIGN §12.2 renderer, §19 observation surface).
+ * Agent chat panel (DESIGN §12.2 renderer, §19 observation surface).
  *
- * ONE right-hand panel that renders the ACTIVE agent tab — Claude, Codex, or
- * Grok, uniformly — from the latest serialized reducer snapshot main pushes. The
- * renderer never holds a live `AgentSession`; only these snapshots + a bounded
- * event tail. So this is pure presentation over the AGENT-AGNOSTIC common ground:
+ * A conversation view over the ACTIVE agent tab — Claude, Codex, or Grok,
+ * uniformly. The renderer never holds a live `AgentSession`; it gets a serialized
+ * reducer snapshot + a bounded event tail from main and RECONSTRUCTS a chat
+ * thread from them (turn.started → a user message, assistant.message → the
+ * assistant reply accumulating in place, tool.* → inline tool chips). On top of
+ * that pure presentation sits the ONE control affordance: the composer, whose
+ * Send routes back through `submitPrompt`.
  *
- *   observe → lifecycle badge · active turn · in-flight tools · pending
- *             permissions · last assistant message · event tail
- *   control → the prompt-injection box (Send → `submitPrompt`) + Resume
+ * The thread rebuilds on every state/event push (cheap — the tail is bounded);
+ * the composer is a separate element that is never rebuilt, so a push never wipes
+ * what the user is typing. The status pill's elapsed timer updates on its own
+ * without touching the thread.
  *
- * Every one of those is driven by core `AgentSession` snapshot types, so the
- * panel is identical for all agents. The ONE agent-specific extra is the
- * workspace section (a git worktree/diff), shown only for agents that supply it
- * (Claude today); it hides itself when the data is absent.
- *
- * The info sections re-render on every state push; the inject box is rebuilt only
- * on a session switch, so a state update never wipes what the user is typing or
- * the last receipt.
+ * The one agent-specific extra — a git workspace (Claude today) — is a
+ * collapsible disclosure that hides itself when there is no workspace data.
  */
 
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
@@ -29,8 +27,6 @@ import type {
   WorkspaceInfo,
 } from '../protocol.js';
 
-const EVENT_TAIL_MAX = 50;
-const ASSISTANT_TRUNCATE = 280;
 const WS_FILES_MAX = 12;
 
 type SubmitFn = (runtimeSessionId: string, text: string) => Promise<PromptReceipt>;
@@ -38,8 +34,7 @@ type ResumeFn = (runtimeSessionId: string) => void;
 
 /**
  * The renderer's view of one session's workspace: the info known at creation, the
- * latest live diff (live poll / agent-state piggyback), and the final record once
- * the session exits (which also carries a retained-worktree notice).
+ * latest live diff, and the final record once the session exits.
  */
 export interface WorkspacePanelData {
   info: WorkspaceInfo;
@@ -49,62 +44,113 @@ export interface WorkspacePanelData {
   note?: string;
 }
 
-/** Trim + collapse whitespace for a compact one-liner in the event tail. */
-function oneLine(text: string, max = 80): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+// ── Thread reconstruction ───────────────────────────────────────────────────
+
+interface ToolChip {
+  id: string;
+  name: string;
+  status: 'running' | 'done' | 'failed';
+}
+interface ThreadItem {
+  kind: 'user' | 'assistant' | 'note';
+  turnId?: string;
+  text: string;
+  tools: ToolChip[];
+  streaming: boolean;
+  error?: boolean;
 }
 
-/** Keep a path readable: an over-long root shows its tail with a leading ellipsis. */
-function truncatePath(p: string, max = 42): string {
-  return p.length <= max ? p : '…' + p.slice(p.length - (max - 1));
-}
+/** Rebuild an ordered chat thread from the bounded event tail. */
+function buildThread(events: AgentEventEnvelope[]): ThreadItem[] {
+  const items: ThreadItem[] = [];
+  const asstByTurn = new Map<string, ThreadItem>();
 
-/** A short, human summary of an envelope for the scrolling tail. */
-function summarizeEvent(envelope: AgentEventEnvelope): string {
-  const e = envelope.event as Record<string, unknown> & { type: string };
-  switch (e.type) {
-    case 'turn.started':
-      return typeof e.prompt === 'string' ? `“${oneLine(e.prompt)}”` : '';
-    case 'turn.completed':
-      return typeof e.lastAssistantMessage === 'string' ? oneLine(e.lastAssistantMessage) : '';
-    case 'assistant.message':
-      return typeof e.text === 'string' ? oneLine(e.text) : '';
-    case 'tool.requested':
-    case 'tool.started':
-    case 'tool.completed':
-    case 'tool.failed':
-      return [e.tool, e.toolCallId].filter(Boolean).join(' ');
-    case 'permission.requested':
-    case 'permission.resolved':
-      return [e.tool, e.requestId].filter(Boolean).join(' ');
-    case 'subagent.started':
-    case 'subagent.stopped':
-      return [e.agentType, e.subagentId].filter(Boolean).join(' ');
-    case 'task.created':
-    case 'task.completed':
-      return typeof e.description === 'string' ? oneLine(e.description) : String(e.taskId ?? '');
-    case 'session.exited':
-    case 'process.exited':
-      return String(e.reason ?? '');
-    default:
-      return '';
+  const ensureAssistant = (turnId: string | undefined): ThreadItem => {
+    const key = turnId ?? '∅';
+    let a = asstByTurn.get(key);
+    if (!a) {
+      a = { kind: 'assistant', turnId, text: '', tools: [], streaming: true };
+      asstByTurn.set(key, a);
+      items.push(a);
+    }
+    return a;
+  };
+
+  for (const env of events) {
+    const e = env.event as Record<string, unknown> & { type: string };
+    const turnId = (env.turnId ?? (e.turnId as string | undefined)) as string | undefined;
+    switch (e.type) {
+      case 'turn.started':
+        if (typeof e.prompt === 'string' && e.prompt.trim()) {
+          items.push({ kind: 'user', turnId, text: e.prompt, tools: [], streaming: false });
+        }
+        break;
+      case 'assistant.message': {
+        const a = ensureAssistant(turnId);
+        if (typeof e.text === 'string') a.text = e.text;
+        a.streaming = e.final === false;
+        break;
+      }
+      case 'tool.requested':
+      case 'tool.started': {
+        const a = ensureAssistant(turnId);
+        const id = String(e.toolCallId ?? '');
+        if (!a.tools.some((t) => t.id === id)) {
+          a.tools.push({ id, name: String(e.tool || id || 'tool'), status: 'running' });
+        }
+        break;
+      }
+      case 'tool.completed':
+      case 'tool.failed': {
+        const a = ensureAssistant(turnId);
+        const id = String(e.toolCallId ?? '');
+        const status = e.type === 'tool.failed' ? 'failed' : 'done';
+        const chip = a.tools.find((t) => t.id === id);
+        if (chip) chip.status = status;
+        else a.tools.push({ id, name: String(e.tool || id || 'tool'), status });
+        break;
+      }
+      case 'turn.completed': {
+        const a = asstByTurn.get(turnId ?? '∅');
+        if (a) {
+          a.streaming = false;
+          if (!a.text && typeof e.lastAssistantMessage === 'string') a.text = e.lastAssistantMessage;
+        } else if (typeof e.lastAssistantMessage === 'string' && e.lastAssistantMessage) {
+          items.push({ kind: 'assistant', turnId, text: e.lastAssistantMessage, tools: [], streaming: false });
+        }
+        break;
+      }
+      case 'turn.failed': {
+        const a = asstByTurn.get(turnId ?? '∅');
+        if (a) a.streaming = false;
+        items.push({
+          kind: 'note',
+          text: `turn failed${e.error ? `: ${e.error}` : ''}`,
+          tools: [],
+          streaming: false,
+          error: true,
+        });
+        break;
+      }
+      case 'notification':
+        if (typeof e.message === 'string' && e.message) {
+          items.push({
+            kind: 'note',
+            text: e.message,
+            tools: [],
+            streaming: false,
+            error: e.notificationType === 'error',
+          });
+        }
+        break;
+      default:
+        break;
+    }
   }
+  return items;
 }
 
-/** Compact human key/value summary of a tool/permission input object. */
-function summarizeInput(input: unknown): string {
-  if (input == null) return '';
-  if (typeof input === 'string') return oneLine(input);
-  if (typeof input !== 'object') return oneLine(String(input));
-  const obj = input as Record<string, unknown>;
-  const parts: string[] = [];
-  for (const key of Object.keys(obj).slice(0, 4)) {
-    const v = obj[key];
-    parts.push(`${key}=${oneLine(typeof v === 'string' ? v : JSON.stringify(v), 40)}`);
-  }
-  return parts.join(' ');
-}
+// ── DOM helpers ──────────────────────────────────────────────────────────────
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -117,37 +163,36 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+function truncatePath(p: string, max = 42): string {
+  return p.length <= max ? p : '…' + p.slice(p.length - (max - 1));
+}
+
+const TOOL_ICON: Record<ToolChip['status'], string> = { running: '◍', done: '✓', failed: '✗' };
+
 export class AgentPanel {
   private shownSessionId: string | undefined;
-  private assistantExpanded = false;
+  private agentKind = 'agent';
 
-  // Fixed skeleton nodes, built once, updated in place.
+  // Header
   private readonly kindBadge: HTMLSpanElement;
-  private readonly badge: HTMLSpanElement;
-  private readonly obs: HTMLSpanElement;
+  private readonly statusDot: HTMLSpanElement;
+  private readonly statusText: HTMLSpanElement;
   private readonly resumeBtn: HTMLButtonElement;
-  private readonly turnLine: HTMLDivElement;
-  // Workspace section (agent-specific extra; Claude today).
-  private readonly wsSection: HTMLElement;
-  private readonly wsBadge: HTMLSpanElement;
-  private readonly wsBranch: HTMLSpanElement;
-  private readonly wsRoot: HTMLDivElement;
-  private readonly wsCommit: HTMLDivElement;
-  private readonly wsNote: HTMLDivElement;
-  private readonly wsRetained: HTMLDivElement;
-  private readonly wsFilesHeading: HTMLHeadingElement;
-  private readonly wsFiles: HTMLUListElement;
-  private readonly toolsList: HTMLUListElement;
-  private readonly permsSection: HTMLElement;
-  private readonly permsList: HTMLUListElement;
-  private readonly assistantBox: HTMLDivElement;
-  private readonly eventTail: HTMLDivElement;
+  // Attention + context
+  private readonly permsBanner: HTMLDivElement;
+  private readonly wsDisclosure: HTMLDetailsElement;
+  private readonly wsSummary: HTMLElement;
+  private readonly wsBody: HTMLDivElement;
+  // Conversation
+  private readonly thread: HTMLDivElement;
+  // Composer
   private readonly input: HTMLTextAreaElement;
   private readonly sendBtn: HTMLButtonElement;
   private readonly receiptBox: HTMLDivElement;
 
-  // Elapsed ticker for the active turn.
+  // Live turn ticker: only the status pill updates on tick, never the thread.
   private activeTurnStartedAt: number | undefined;
+  private turnLabel = '';
   private readonly elapsedTimer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -155,107 +200,63 @@ export class AgentPanel {
     private readonly onSubmit: SubmitFn,
     private readonly onResume: ResumeFn,
   ) {
-    root.classList.add('activity');
+    root.classList.add('activity', 'chat');
 
-    const header = el('div', 'panel-header');
-    // Which agent this panel is showing (claude / codex / grok); colored via CSS.
+    // Header: agent identity · live status · resume.
+    const header = el('div', 'chat-header');
     this.kindBadge = el('span', 'kind-badge');
-    this.badge = el('span', 'badge');
-    this.obs = el('span', 'obs');
-    // Resume: shown only on an exited tab with a resumable id. Click reconstructs
-    // the spawn (a new tab reopening the same agent session) via onResume.
+    const status = el('span', 'status-pill');
+    this.statusDot = el('span', 'status-dot');
+    this.statusText = el('span', 'status-text', 'idle');
+    status.append(this.statusDot, this.statusText);
     this.resumeBtn = el('button', 'resume-btn', '⟲ Resume');
     this.resumeBtn.type = 'button';
     this.resumeBtn.classList.add('hidden');
     this.resumeBtn.addEventListener('click', () => {
       if (this.shownSessionId) this.onResume(this.shownSessionId);
     });
-    header.append(this.kindBadge, this.badge, this.obs, this.resumeBtn);
+    header.append(this.kindBadge, status, this.resumeBtn);
 
-    this.turnLine = el('div', 'panel-turn');
+    // Pending-permission banner (the "needs attention" signal).
+    this.permsBanner = el('div', 'perms-banner hidden');
 
-    // Workspace: isolation badge + branch, root path, commit, retained notice,
-    // and the files-touched list. Hidden until an agent supplies its data (only
-    // agents with a git workspace — Claude — do; Codex/Grok pass none).
-    this.wsSection = el('section', 'panel-section workspace-section');
-    const wsHeader = el('div', 'ws-header');
-    wsHeader.append(el('h4', undefined, 'Workspace'));
-    this.wsBadge = el('span', 'ws-badge');
-    this.wsBranch = el('span', 'ws-branch');
-    wsHeader.append(this.wsBadge, this.wsBranch);
-    this.wsRoot = el('div', 'ws-root');
-    this.wsCommit = el('div', 'ws-commit');
-    this.wsNote = el('div', 'ws-note');
-    this.wsRetained = el('div', 'ws-retained');
-    this.wsFilesHeading = el('h5', 'ws-files-heading', 'Files touched');
-    this.wsFiles = el('ul', 'ws-files');
-    this.wsSection.append(
-      wsHeader,
-      this.wsRoot,
-      this.wsCommit,
-      this.wsNote,
-      this.wsRetained,
-      this.wsFilesHeading,
-      this.wsFiles,
-    );
+    // Workspace disclosure (Claude today) — collapsed, self-hiding.
+    this.wsDisclosure = document.createElement('details');
+    this.wsDisclosure.className = 'ws-disclosure hidden';
+    this.wsSummary = document.createElement('summary');
+    this.wsSummary.className = 'ws-summary';
+    this.wsBody = el('div', 'ws-body');
+    this.wsDisclosure.append(this.wsSummary, this.wsBody);
 
-    const toolsSection = el('section', 'panel-section');
-    toolsSection.append(el('h4', undefined, 'In-flight tools'));
-    this.toolsList = el('ul', 'tools');
-    toolsSection.append(this.toolsList);
+    // The conversation thread.
+    this.thread = el('div', 'chat-thread');
 
-    this.permsSection = el('section', 'panel-section perms-section');
-    this.permsSection.append(el('h4', undefined, 'Pending permissions'));
-    this.permsList = el('ul', 'perms');
-    this.permsSection.append(this.permsList);
-
-    const assistantSection = el('section', 'panel-section');
-    assistantSection.append(el('h4', undefined, 'Last assistant message'));
-    this.assistantBox = el('div', 'assistant-msg');
-    this.assistantBox.addEventListener('click', () => {
-      this.assistantExpanded = !this.assistantExpanded;
-      this.renderAssistant(this.lastAssistant);
-    });
-    assistantSection.append(this.assistantBox);
-
-    const eventsSection = el('section', 'panel-section events-section');
-    eventsSection.append(el('h4', undefined, 'Events'));
-    this.eventTail = el('div', 'event-tail');
-    eventsSection.append(this.eventTail);
-
-    const inject = el('div', 'panel-inject');
-    this.input = el('textarea', 'inject-input');
-    this.input.placeholder = 'Inject a prompt… (⌘/Ctrl+Enter to send)';
-    this.input.rows = 2;
-    this.sendBtn = el('button', 'inject-send', 'Send');
-    this.sendBtn.type = 'button';
-    this.receiptBox = el('div', 'inject-receipt');
-    this.sendBtn.addEventListener('click', () => void this.submit());
+    // Composer.
+    const composer = el('div', 'composer');
+    this.input = el('textarea', 'composer-input');
+    this.input.rows = 1;
+    this.input.placeholder = 'Message the agent…  (⌘/Ctrl+Enter)';
+    this.input.addEventListener('input', () => this.autoGrow());
     this.input.addEventListener('keydown', (ev) => {
       if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
         ev.preventDefault();
         void this.submit();
       }
     });
-    inject.append(this.input, this.sendBtn, this.receiptBox);
+    const composerRow = el('div', 'composer-row');
+    this.sendBtn = el('button', 'composer-send', 'Send');
+    this.sendBtn.type = 'button';
+    this.sendBtn.addEventListener('click', () => void this.submit());
+    this.receiptBox = el('div', 'composer-receipt');
+    composerRow.append(this.receiptBox, this.sendBtn);
+    composer.append(this.input, composerRow);
 
-    root.append(
-      header,
-      this.turnLine,
-      this.wsSection,
-      toolsSection,
-      this.permsSection,
-      assistantSection,
-      eventsSection,
-      inject,
-    );
+    root.append(header, this.permsBanner, this.wsDisclosure, this.thread, composer);
 
-    this.elapsedTimer = setInterval(() => this.renderTurn(), 1000);
+    this.elapsedTimer = setInterval(() => this.renderStatus(), 1000);
   }
 
-  private lastAssistant: string | undefined;
-
-  /** Show/refresh the panel for one session. A different id resets the inject box. */
+  /** Show/refresh the panel for one session. A different id resets the composer. */
   render(
     runtimeSessionId: string,
     agentKind: string,
@@ -265,71 +266,159 @@ export class AgentPanel {
     exited: boolean,
     canResume: boolean,
   ): void {
-    if (runtimeSessionId !== this.shownSessionId) {
+    const switched = runtimeSessionId !== this.shownSessionId;
+    if (switched) {
       this.shownSessionId = runtimeSessionId;
-      this.assistantExpanded = false;
-      this.resetInject();
+      this.resetComposer();
     }
+    this.agentKind = agentKind;
     this.root.classList.remove('hidden');
-    // Identity: which agent this is (colored via CSS data-kind).
+
     this.kindBadge.textContent = agentKind;
     this.kindBadge.dataset.kind = agentKind;
-    // Resume is offered on an exited tab that has a resumable id; a live tab
-    // hides it. Applies to every agent (Claude --session-id, Codex thread, Grok id).
     this.resumeBtn.classList.toggle('hidden', !(exited && canResume));
-    this.renderState(msg);
+
+    // Status pill from lifecycle + active turn.
+    const state = msg?.state;
+    this.activeTurnStartedAt = state?.activeTurn ? Date.parse(state.activeTurn.startedAt) : undefined;
+    this.turnLabel = state?.activeTurn?.id ?? '';
+    this.lifecycle = state?.lifecycle ?? 'preparing';
+    this.exited = exited;
+    this.renderStatus();
+
+    this.renderPerms(state?.permissions ?? []);
     this.renderWorkspace(workspace);
-    this.renderEvents(events);
+    this.renderThread(events, switched);
+  }
+
+  private lifecycle = 'preparing';
+  private exited = false;
+
+  private renderStatus(): void {
+    const active = this.activeTurnStartedAt !== undefined;
+    let label: string;
+    let tone: string;
+    if (active) {
+      const secs = Math.max(0, Math.round((Date.now() - this.activeTurnStartedAt!) / 1000));
+      label = `working · ${secs}s`;
+      tone = 'working';
+    } else if (this.lifecycle === 'exited' || this.lifecycle === 'failed' || this.exited) {
+      label = this.lifecycle === 'failed' ? 'failed' : 'exited';
+      tone = 'exited';
+    } else if (this.lifecycle === 'ready') {
+      label = 'ready';
+      tone = 'ready';
+    } else {
+      label = this.lifecycle;
+      tone = 'idle';
+    }
+    this.statusText.textContent = this.turnLabel && active ? `${label} · ${this.turnLabel}` : label;
+    this.statusDot.dataset.tone = tone;
+    this.root.dataset.busy = active ? '1' : '0';
+  }
+
+  private renderPerms(perms: { tool?: string; requestId: string }[]): void {
+    if (perms.length === 0) {
+      this.permsBanner.classList.add('hidden');
+      return;
+    }
+    this.permsBanner.classList.remove('hidden');
+    const names = perms.map((p) => p.tool ?? p.requestId).join(', ');
+    this.permsBanner.replaceChildren(
+      el('span', 'perms-icon', '⚠'),
+      el('span', 'perms-text', `Waiting for permission: ${names}`),
+    );
+  }
+
+  private renderThread(events: AgentEventEnvelope[], switched: boolean): void {
+    // Preserve auto-scroll: stick to the bottom unless the user scrolled up.
+    const nearBottom = switched || this.thread.scrollHeight - this.thread.scrollTop - this.thread.clientHeight < 40;
+
+    const items = buildThread(events);
+    this.thread.replaceChildren();
+
+    if (items.length === 0) {
+      this.thread.append(el('div', 'thread-empty', 'No messages yet. Send one below to get started.'));
+    }
+
+    for (const item of items) {
+      const row = el('div', `msg ${item.kind}${item.error ? ' error' : ''}`);
+      if (item.kind === 'note') {
+        row.append(el('div', 'msg-note', item.text));
+        this.thread.append(row);
+        continue;
+      }
+      const label = el('div', 'msg-role');
+      if (item.kind === 'user') {
+        label.textContent = 'you';
+      } else {
+        label.textContent = this.agentKind;
+        label.dataset.kind = this.agentKind;
+      }
+      row.append(label);
+
+      const body = el('div', 'msg-body');
+      if (item.text) body.append(el('div', 'msg-text', item.text));
+
+      if (item.tools.length > 0) {
+        const tools = el('div', 'msg-tools');
+        for (const t of item.tools) {
+          const chip = el('span', `tool-chip ${t.status}`);
+          chip.append(el('span', 'tool-ic', TOOL_ICON[t.status]), el('span', 'tool-nm', t.name));
+          tools.append(chip);
+        }
+        body.append(tools);
+      }
+
+      if (item.streaming) body.append(el('span', 'stream-cursor', '▍'));
+      if (!item.text && item.tools.length === 0 && item.streaming) {
+        body.append(el('span', 'thinking', 'thinking…'));
+      }
+      row.append(body);
+      this.thread.append(row);
+    }
+
+    if (nearBottom) this.thread.scrollTop = this.thread.scrollHeight;
   }
 
   private renderWorkspace(data: WorkspacePanelData | undefined): void {
     if (!data) {
-      this.wsSection.classList.add('hidden');
+      this.wsDisclosure.classList.add('hidden');
       return;
     }
-    this.wsSection.classList.remove('hidden');
+    this.wsDisclosure.classList.remove('hidden');
     const { info, diff, final } = data;
 
-    this.wsBadge.textContent = info.isolation;
-    this.wsBadge.dataset.isolation = info.isolation;
-
-    this.wsBranch.textContent = info.branch ?? '';
-    this.wsBranch.classList.toggle('hidden', !info.branch);
-
-    // Root path: truncated head; full value lives in the title attr.
-    this.wsRoot.textContent = truncatePath(info.root);
-    this.wsRoot.title = info.root;
-
-    // Commit: final short-sha once exited, otherwise the base commit.
-    const commit = final?.metadata.finalCommit ?? info.initialCommit;
-    this.wsCommit.textContent = commit ? `${final ? 'final' : 'base'} ${commit.slice(0, 8)}` : '';
-    this.wsCommit.classList.toggle('hidden', !commit);
-
-    // Resume-fallback note (e.g. the original worktree was gone, so this resumed
-    // session runs on the repo root instead).
-    this.wsNote.textContent = data.note ?? '';
-    this.wsNote.classList.toggle('hidden', !data.note);
-
-    // Retained-worktree notice: highlighted, only when a dirty worktree was kept.
-    const retained = final?.retained ?? false;
-    this.wsRetained.textContent = retained ? `worktree retained — ${final?.reason ?? 'uncommitted changes kept'}` : '';
-    this.wsRetained.classList.toggle('hidden', !retained);
-
-    // Files touched: final metadata after exit, else the latest live diff.
     const files = final ? final.metadata.filesTouched : (diff?.filesTouched ?? []);
-    this.wsFilesHeading.textContent = final ? 'Files touched (final)' : 'Files touched';
-    this.wsFiles.replaceChildren();
-    if (files.length === 0) {
-      this.wsFiles.append(el('li', 'empty', final ? 'none' : '—'));
-    } else {
+    this.wsSummary.replaceChildren(
+      el('span', 'ws-tag', info.isolation),
+      el('span', 'ws-branch', info.branch ?? ''),
+      el('span', 'ws-count', `${files.length} file${files.length === 1 ? '' : 's'}`),
+    );
+
+    this.wsBody.replaceChildren();
+    const root = el('div', 'ws-root', truncatePath(info.root));
+    root.title = info.root;
+    this.wsBody.append(root);
+
+    const commit = final?.metadata.finalCommit ?? info.initialCommit;
+    if (commit) this.wsBody.append(el('div', 'ws-commit', `${final ? 'final' : 'base'} ${commit.slice(0, 8)}`));
+    if (data.note) this.wsBody.append(el('div', 'ws-note', data.note));
+    if (final?.retained) {
+      this.wsBody.append(el('div', 'ws-retained', `worktree retained — ${final.reason ?? 'uncommitted changes kept'}`));
+    }
+
+    if (files.length > 0) {
+      const list = el('ul', 'ws-files');
       for (const f of files.slice(0, WS_FILES_MAX)) {
         const li = el('li', 'ws-file', f);
         li.title = f;
-        this.wsFiles.append(li);
+        list.append(li);
       }
       if (files.length > WS_FILES_MAX) {
-        this.wsFiles.append(el('li', 'ws-file more', `… +${files.length - WS_FILES_MAX} more`));
+        list.append(el('li', 'ws-file more', `… +${files.length - WS_FILES_MAX} more`));
       }
+      this.wsBody.append(list);
     }
   }
 
@@ -348,102 +437,18 @@ export class AgentPanel {
     clearInterval(this.elapsedTimer);
   }
 
-  private renderState(msg: AgentStateMessage | undefined): void {
-    const state = msg?.state;
-    const lifecycle = state?.lifecycle ?? 'preparing';
-    this.badge.textContent = lifecycle;
-    this.badge.dataset.lifecycle = lifecycle;
-    this.obs.textContent = msg?.observationLevel ?? 'terminal-only';
-
-    this.activeTurnStartedAt = state?.activeTurn ? Date.parse(state.activeTurn.startedAt) : undefined;
-    this.renderTurn(state?.activeTurn?.id);
-
-    // In-flight tools.
-    this.toolsList.replaceChildren();
-    const tools = state?.tools ?? [];
-    if (tools.length === 0) {
-      this.toolsList.append(el('li', 'empty', 'none'));
-    } else {
-      for (const t of tools) {
-        const li = el('li');
-        li.append(el('span', 'tool-name', t.tool ?? t.toolCallId));
-        li.append(el('span', 'tool-state', t.state));
-        const inSummary = summarizeInput(t.input);
-        if (inSummary) li.append(el('span', 'tool-input', inSummary));
-        this.toolsList.append(li);
-      }
-    }
-
-    // Pending permissions — the "needs attention" signal.
-    this.permsList.replaceChildren();
-    const perms = state?.permissions ?? [];
-    this.permsSection.classList.toggle('active', perms.length > 0);
-    if (perms.length === 0) {
-      this.permsList.append(el('li', 'empty', 'none'));
-    } else {
-      for (const p of perms) {
-        const li = el('li');
-        li.append(el('span', 'perm-name', p.tool ?? p.requestId));
-        this.permsList.append(li);
-      }
-    }
-
-    this.lastAssistant = state?.lastAssistantMessage;
-    this.renderAssistant(this.lastAssistant);
+  private autoGrow(): void {
+    this.input.style.height = 'auto';
+    this.input.style.height = `${Math.min(this.input.scrollHeight, 140)}px`;
   }
 
-  private renderTurn(idOverride?: string): void {
-    if (this.activeTurnStartedAt === undefined) {
-      this.turnLine.textContent = 'no active turn';
-      this.turnLine.classList.remove('active');
-      return;
-    }
-    const secs = Math.max(0, Math.round((Date.now() - this.activeTurnStartedAt) / 1000));
-    const id = idOverride ?? this.currentTurnId ?? '';
-    this.currentTurnId = id;
-    this.turnLine.textContent = `turn ${id || '?'} · ${secs}s`;
-    this.turnLine.classList.add('active');
-  }
-
-  private currentTurnId: string | undefined;
-
-  private renderAssistant(text: string | undefined): void {
-    if (!text) {
-      this.assistantBox.textContent = '—';
-      this.assistantBox.classList.remove('expandable');
-      return;
-    }
-    const long = text.length > ASSISTANT_TRUNCATE;
-    if (long && !this.assistantExpanded) {
-      this.assistantBox.textContent = text.slice(0, ASSISTANT_TRUNCATE) + ' … (more)';
-    } else {
-      this.assistantBox.textContent = long ? text + ' (less)' : text;
-    }
-    this.assistantBox.classList.toggle('expandable', long);
-  }
-
-  private renderEvents(events: AgentEventEnvelope[]): void {
-    const tail = events.slice(-EVENT_TAIL_MAX);
-    this.eventTail.replaceChildren();
-    for (const envelope of tail) {
-      const row = el('div', 'event-row');
-      row.append(el('span', 'ev-seq', `#${envelope.sequence}`));
-      row.append(el('span', 'ev-type', (envelope.event as { type: string }).type));
-      row.append(el('span', 'ev-source', envelope.source));
-      const summary = summarizeEvent(envelope);
-      if (summary) row.append(el('span', 'ev-summary', summary));
-      this.eventTail.append(row);
-    }
-    // Keep the newest line in view.
-    this.eventTail.scrollTop = this.eventTail.scrollHeight;
-  }
-
-  private resetInject(): void {
+  private resetComposer(): void {
     this.input.value = '';
+    this.input.style.height = 'auto';
     this.input.disabled = false;
     this.sendBtn.disabled = false;
     this.receiptBox.textContent = '';
-    this.receiptBox.className = 'inject-receipt';
+    this.receiptBox.className = 'composer-receipt';
   }
 
   private async submit(): Promise<void> {
@@ -454,8 +459,8 @@ export class AgentPanel {
 
     this.sendBtn.disabled = true;
     this.input.disabled = true;
-    this.receiptBox.className = 'inject-receipt pending';
-    this.receiptBox.textContent = 'submitting…';
+    this.receiptBox.className = 'composer-receipt pending';
+    this.receiptBox.textContent = 'sending…';
 
     let receipt: PromptReceipt;
     try {
@@ -464,16 +469,15 @@ export class AgentPanel {
       receipt = { status: 'rejected', reason: err instanceof Error ? err.message : String(err) };
     }
 
-    // The session may have changed while the promise was in flight; only paint
-    // the receipt if we are still showing the session it belongs to.
+    // Only paint the receipt if we are still showing the session it belongs to.
     if (this.shownSessionId !== sessionId) return;
-    this.receiptBox.className = `inject-receipt ${receipt.status}`;
-    this.receiptBox.textContent =
-      receipt.status === 'confirmed'
-        ? `confirmed${receipt.turnId ? ` (turn ${receipt.turnId})` : ''}`
-        : `${receipt.status}: ${receipt.reason}`;
+    this.receiptBox.className = `composer-receipt ${receipt.status}`;
+    this.receiptBox.textContent = receipt.status === 'confirmed' ? 'sent' : `${receipt.status}: ${receipt.reason}`;
     this.input.disabled = false;
     this.sendBtn.disabled = false;
-    if (receipt.status === 'confirmed') this.input.value = '';
+    if (receipt.status === 'confirmed') {
+      this.input.value = '';
+      this.input.style.height = 'auto';
+    }
   }
 }
