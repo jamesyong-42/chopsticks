@@ -166,8 +166,8 @@ function PaneView({
         isActive
         autoResize
         className="term-surface"
-        // Electron canvas still rejects *-srgb; WebGL2 is the reliable path.
-        resttyRenderer="webgl2"
+        // Match avocado/apps/ghostty: WebGPU when available, WebGL2 fallback.
+        resttyRenderer="auto"
         onFocus={onFocus}
         actionsRef={actionsRef}
       />
