@@ -182,9 +182,9 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [isolation, setIsolation] = useState<'shared' | 'worktree'>('shared');
 
-  const [claudeState, setClaudeState] = useState(() => new Map<string, AgentStateMessage>());
-  const [claudeEvents, setClaudeEvents] = useState(() => new Map<string, AgentEventEnvelope[]>());
-  const [claudeWorkspace, setClaudeWorkspace] = useState(() => new Map<string, WorkspacePanelData>());
+  const [agentState, setAgentState] = useState(() => new Map<string, AgentStateMessage>());
+  const [agentEvents, setAgentEvents] = useState(() => new Map<string, AgentEventEnvelope[]>());
+  const [agentWorkspace, setAgentWorkspace] = useState(() => new Map<string, WorkspacePanelData>());
   const [claudeSessionId, setClaudeSessionId] = useState(() => new Map<string, string>());
   const [codexThreadId, setCodexThreadId] = useState(() => new Map<string, string>());
   const [grokSessionId, setGrokSessionId] = useState(() => new Map<string, string>());
@@ -215,7 +215,7 @@ export function App(): JSX.Element {
     const timer = setInterval(() => {
       void chopsticks.workspaceDiff(runtimeSessionId).then((diff) => {
         if (!diff) return;
-        setClaudeWorkspace((cur) => {
+        setAgentWorkspace((cur) => {
           const d = cur.get(runtimeSessionId);
           if (!d || d.final) return cur;
           const next = new Map(cur);
@@ -289,17 +289,17 @@ export function App(): JSX.Element {
       if (pane) {
         releasePane(pane, opts.killSession);
         stopDiffPoll(pane.sessionId);
-        setClaudeState((m) => {
+        setAgentState((m) => {
           const n = new Map(m);
           n.delete(pane.sessionId);
           return n;
         });
-        setClaudeEvents((m) => {
+        setAgentEvents((m) => {
           const n = new Map(m);
           n.delete(pane.sessionId);
           return n;
         });
-        setClaudeWorkspace((m) => {
+        setAgentWorkspace((m) => {
           const n = new Map(m);
           n.delete(pane.sessionId);
           return n;
@@ -419,7 +419,7 @@ export function App(): JSX.Element {
           fail(`${result.error.code}: ${result.error.message}`);
           return;
         }
-        setClaudeWorkspace((prev) => {
+        setAgentWorkspace((prev) => {
           const next = new Map(prev);
           next.set(result.runtimeSessionId, { info: result.workspace, note });
           return next;
@@ -505,7 +505,7 @@ export function App(): JSX.Element {
   const resumeClaude = useCallback(
     async (runtimeSessionId: string) => {
       const sessionId = claudeSessionId.get(runtimeSessionId);
-      const data = claudeWorkspace.get(runtimeSessionId);
+      const data = agentWorkspace.get(runtimeSessionId);
       if (!sessionId || !data) return;
       const { info, final } = data;
       let workspace: { isolation: 'shared'; path?: string };
@@ -522,7 +522,7 @@ export function App(): JSX.Element {
       }
       await startClaude({ resume: sessionId, workspace }, 'claude ⟲', note);
     },
-    [claudeSessionId, claudeWorkspace, startClaude],
+    [claudeSessionId, agentWorkspace, startClaude],
   );
 
   const resumeCodex = useCallback(
@@ -610,7 +610,7 @@ export function App(): JSX.Element {
     if (!panel) return;
     const pane = focusedSession;
     if (pane?.agentKind) {
-      const workspace = pane.agentKind === 'claude' ? claudeWorkspace.get(pane.sessionId) : undefined;
+      const workspace = pane.agentKind === 'claude' ? agentWorkspace.get(pane.sessionId) : undefined;
       const canResume =
         pane.agentKind === 'claude'
           ? claudeSessionId.has(pane.sessionId)
@@ -622,8 +622,8 @@ export function App(): JSX.Element {
       panel.render(
         pane.sessionId,
         pane.agentKind,
-        claudeState.get(pane.sessionId),
-        claudeEvents.get(pane.sessionId) ?? [],
+        agentState.get(pane.sessionId),
+        agentEvents.get(pane.sessionId) ?? [],
         workspace,
         false,
         canResume,
@@ -631,7 +631,7 @@ export function App(): JSX.Element {
     } else {
       panel.hide();
     }
-  }, [focusedSession, claudeState, claudeEvents, claudeWorkspace, claudeSessionId, codexThreadId, grokSessionId]);
+  }, [focusedSession, agentState, agentEvents, agentWorkspace, claudeSessionId, codexThreadId, grokSessionId]);
 
   // ─── Lifecycle: first tab, exit, IPC, restore, keybindings ────────────
 
@@ -708,7 +708,7 @@ export function App(): JSX.Element {
         void exit;
       }),
       chopsticks.onAgentEvents((events: AgentEventMessage[]) => {
-        setClaudeEvents((prev) => {
+        setAgentEvents((prev) => {
           const next = new Map(prev);
           for (const { runtimeSessionId, envelope } of events) {
             const buf = [...(next.get(runtimeSessionId) ?? []), envelope];
@@ -733,14 +733,14 @@ export function App(): JSX.Element {
         });
       }),
       chopsticks.onAgentState((state: AgentStateMessage) => {
-        setClaudeState((prev) => {
+        setAgentState((prev) => {
           const next = new Map(prev);
           next.set(state.runtimeSessionId, state);
           return next;
         });
         void chopsticks.workspaceDiff(state.runtimeSessionId).then((diff) => {
           if (!diff) return;
-          setClaudeWorkspace((cur) => {
+          setAgentWorkspace((cur) => {
             const d = cur.get(state.runtimeSessionId);
             if (!d || d.final) return cur;
             const next = new Map(cur);
@@ -751,7 +751,7 @@ export function App(): JSX.Element {
       }),
       chopsticks.onWorkspaceFinal((event: WorkspaceFinalEvent) => {
         stopDiffPoll(event.runtimeSessionId);
-        setClaudeWorkspace((prev) => {
+        setAgentWorkspace((prev) => {
           const data = prev.get(event.runtimeSessionId);
           if (!data) return prev;
           const next = new Map(prev);
