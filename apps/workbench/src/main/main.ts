@@ -590,12 +590,13 @@ async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions):
 }
 
 /**
- * Start a Codex session (M5 C6, Model B). Unlike Claude (one PTY observed via
- * hooks), a Codex session is: (1) a private `codex app-server` on a unix socket,
- * (2) a native `codex --remote` TUI in a PTY — the terminal tab, spawned through
- * the SAME avocado transport as every other session, and (3) a structured
- * observer over the app-server that attaches to whatever thread the TUI creates
- * and feeds the agent channels. The user drives the terminal; chopsticks watches.
+ * Start a Codex session. Unlike Claude (one PTY observed via hooks), a Codex
+ * session is: (1) a private `codex app-server` on a unix socket, (2) a
+ * controller-owned thread (`thread/start` + empty inject so the panel is ready
+ * before any keystroke), (3) a native `codex resume <id> --remote` TUI in a PTY
+ * — the terminal tab, spawned through the SAME avocado transport as every other
+ * session. The user drives the terminal; chopsticks already owns/observes the
+ * thread, so lifecycle leaves `preparing` immediately (Grok/Claude parity).
  */
 async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> {
   const session = await createCodexTuiSession({
@@ -607,8 +608,7 @@ async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): P
   registerAgentSession(session);
   const info = manager.getSessionInfo(session.runtimeSessionId);
   if (!info) throw new Error(`codex session ${session.runtimeSessionId} not registered in manager`);
-  // The thread id materializes on the first prompt ('' until then; the renderer
-  // captures it off event envelopes for resume).
+  // Thread id is known at create time (controller-owned start, or resume id).
   return {
     runtimeSessionId: session.runtimeSessionId,
     descriptor: infoToDescriptor(info),

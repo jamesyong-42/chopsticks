@@ -1,20 +1,22 @@
 /**
  * createCodexTuiSession — the full Codex native-TUI session recipe as one
- * `AgentSession` (the "Model B" host integration, lifted out of the app).
+ * `AgentSession` (the host integration, lifted out of the app).
  *
- * A Codex TUI session is three things the adapter now owns end to end:
+ * A Codex TUI session is three things the adapter owns end to end:
  *   1. a private `codex app-server` on a unix socket (backing service),
- *   2. a native `codex --remote` TUI spawned through the host's terminal
- *      capability (the tab the user drives),
- *   3. a structured observer over the app-server that attaches to whatever
- *      thread the TUI creates and feeds the agent event/state channels.
+ *   2. a controller-owned thread on that server — `thread/start` (or resume of
+ *      a known id) plus empty `inject_items` so the rollout materializes without
+ *      a user prompt or model turn (probe 2026-07-15),
+ *   3. a native `codex resume <id> --remote` TUI spawned through the host's
+ *      terminal capability (the tab the user drives), observing the SAME thread.
  *
- * The app used to wire these three together itself; now it just provides an
- * {@link AgentHost} and gets back a plain {@link AgentSession}. Injection is the
- * bracketed-paste into the native TUI (verified to record clean text on the
- * thread); confirmation is the turn appearing in the observed stream, so the
- * receipt is a best-effort `confirmed` (the structured driver, by contrast, has
- * deterministic confirmation — this is the native-TUI path).
+ * Owning the thread first is what lets the agent panel leave `preparing`
+ * immediately (session.started → ready), matching Claude/Grok. Bare
+ * `codex --remote` only creates a thread on the first prompt, which left the
+ * panel stuck on preparing until the user typed.
+ *
+ * Injection is still bracketed-paste into the native TUI; confirmation is
+ * best-effort `confirmed` (the structured driver has deterministic receipts).
  */
 
 import type {
@@ -33,8 +35,10 @@ import { wsOverUnixTransport } from './ws-transport.js';
 export interface CreateCodexTuiSessionOptions extends AgentTuiSessionOptions {
   /** Codex executable (default `codex`). */
   executable?: string;
-  /** Choose which thread to attach to when several appear. Default: the first. */
+  /** Choose which thread to attach to when several appear (passive observer only). */
   selectThread?: (threadId: string) => boolean;
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approvalPolicy?: 'never' | 'on-request' | 'untrusted';
 }
 
 /** A Codex native-TUI session — {@link AgentSession} plus the rollout path. */
@@ -55,33 +59,53 @@ export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions):
     throw err;
   }
 
-  // Resume reopens the SAME thread; otherwise a fresh `codex --remote` TUI (the
-  // thread materializes on the first prompt).
-  const remoteAddr = `unix://${server.socketPath}`;
-  const args = opts.resume ? ['resume', opts.resume, '--remote', remoteAddr] : ['--remote', remoteAddr];
-
-  let runtimeSessionId: string;
+  // Observer first: own or resume the thread so sessionId + ready state exist
+  // before the TUI process is even spawned.
+  let observer;
   try {
-    ({ runtimeSessionId } = await host.spawnTerminal({ command: executable, args, cwd: opts.cwd }));
+    observer = await createCodexObserver({
+      transport: wsOverUnixTransport(server.socketPath),
+      selectThread: opts.selectThread,
+      ...(opts.resume
+        ? { threadId: opts.resume }
+        : {
+            start: {
+              cwd: opts.cwd,
+              sandbox: opts.sandbox,
+              approvalPolicy: opts.approvalPolicy,
+            },
+          }),
+    });
   } catch (err) {
     server.dispose();
     throw err;
   }
 
-  const observer = await createCodexObserver({
-    transport: wsOverUnixTransport(server.socketPath),
-    selectThread: opts.selectThread,
-  }).catch((err) => {
+  const threadId = observer.sessionId;
+  if (!threadId) {
+    await observer.dispose().catch(() => undefined);
+    server.dispose();
+    throw new Error('codex TUI session: observer returned no thread id');
+  }
+
+  // Always join the owned/resumed thread — never bare `--remote` (that creates
+  // a second, unmaterialized thread on first keystroke).
+  const remoteAddr = `unix://${server.socketPath}`;
+  const args = ['resume', threadId, '--remote', remoteAddr];
+
+  let runtimeSessionId: string;
+  try {
+    ({ runtimeSessionId } = await host.spawnTerminal({ command: executable, args, cwd: opts.cwd }));
+  } catch (err) {
+    await observer.dispose().catch(() => undefined);
     server.dispose();
     throw err;
-  });
+  }
 
   let disposed = false;
   return {
     get sessionId(): string {
-      // The thread id (spaghetti join) — empty until the thread materializes on
-      // the first prompt; consumers that need it early read it off events.
-      return observer.sessionId ?? '';
+      return observer.sessionId ?? threadId;
     },
     runtimeSessionId,
     state: (): SessionRuntimeState => observer.state(),

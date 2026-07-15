@@ -194,12 +194,12 @@ export interface CreateCodexSessionOptions {
 }
 
 /**
- * What `createCodexSession` returns. A Codex session is a native `codex --remote`
- * terminal (runtimeSessionId = the PTY id, sharing the chunk/write/exit surface)
- * PLUS a structured observer in main that feeds the SAME agentEvents/agentState
- * channels (Model B: the user drives the native TUI, chopsticks observes over the
- * app-server). `threadId` is the Codex thread id (the spaghetti join) once the
- * observer attaches — undefined at creation (the thread appears on first prompt).
+ * What `createCodexSession` returns. A Codex session is a native
+ * `codex resume <id> --remote` terminal (runtimeSessionId = the PTY id, sharing
+ * the chunk/write/exit surface) PLUS a controller-owned thread on a private
+ * app-server: chopsticks starts/materializes the thread, so `threadId` (the
+ * spaghetti join) is available at creation and the agent panel can leave
+ * `preparing` immediately. The user still drives the native TUI.
  */
 export interface CodexSessionInfo {
   runtimeSessionId: string;

@@ -13,10 +13,12 @@ function controllable(resumeFailuresBeforeSuccess: number) {
   let onCls: ((i: { code: number | null; signal: string | null }) => void) | undefined;
   let resumeFails = resumeFailuresBeforeSuccess;
   let resumeAttempts = 0;
+  const calls: { method?: string; params?: unknown }[] = [];
   const transport: Transport = {
     send: (m) => {
-      const msg = m as { id?: number; method?: string };
+      const msg = m as { id?: number; method?: string; params?: unknown };
       if (msg.id === undefined) return; // client notification (e.g. initialized)
+      calls.push({ method: msg.method, params: msg.params });
       queueMicrotask(() => {
         if (msg.method === 'thread/resume') {
           resumeAttempts++;
@@ -26,8 +28,20 @@ function controllable(resumeFailuresBeforeSuccess: number) {
           } else {
             onMsg?.({ jsonrpc: '2.0', id: msg.id, result: {} });
           }
+        } else if (msg.method === 'thread/start') {
+          onMsg?.({
+            jsonrpc: '2.0',
+            id: msg.id,
+            result: {
+              thread: {
+                id: 'th-owned',
+                sessionId: 'th-owned',
+                path: '/tmp/rollout-th-owned.jsonl',
+              },
+            },
+          });
         } else {
-          onMsg?.({ jsonrpc: '2.0', id: msg.id, result: {} }); // initialize et al.
+          onMsg?.({ jsonrpc: '2.0', id: msg.id, result: {} }); // initialize, inject_items, …
         }
       });
     },
@@ -40,6 +54,7 @@ function controllable(resumeFailuresBeforeSuccess: number) {
     deliver: (m: unknown) => onMsg?.(m),
     fireClose: () => onCls?.({ code: null, signal: null }),
     resumeAttempts: () => resumeAttempts,
+    calls: () => calls,
   };
 }
 
@@ -75,5 +90,65 @@ describe('createCodexObserver attach resilience', () => {
     expect(obs.state().lifecycle).toBe('preparing');
     // The loop has stopped: no further resume attempts after dispose (allow one in-flight).
     expect(t.resumeAttempts()).toBeLessThanOrEqual(attemptsAtDispose + 1);
+  });
+});
+
+describe('createCodexObserver controller-owned bootstrap', () => {
+  it('start: thread/start → inject_items → resume → ready with session id', async () => {
+    const t = controllable(0);
+    const obs = await createCodexObserver({
+      transport: t.transport,
+      start: { cwd: '/tmp/ws', sandbox: 'read-only', approvalPolicy: 'never' },
+    });
+
+    // Bootstrap completes before createCodexObserver resolves — ready immediately,
+    // no user prompt required (the workbench panel "preparing" fix).
+    expect(obs.sessionId).toBe('th-owned');
+    expect(obs.threadPath()).toBe('/tmp/rollout-th-owned.jsonl');
+    expect(obs.state().lifecycle).toBe('ready');
+
+    const methods = t.calls().map((c) => c.method);
+    expect(methods).toContain('thread/start');
+    expect(methods).toContain('thread/inject_items');
+    expect(methods).toContain('thread/resume');
+
+    const inject = t.calls().find((c) => c.method === 'thread/inject_items');
+    expect(inject?.params).toEqual({
+      threadId: 'th-owned',
+      items: [{ type: 'text', text: '' }],
+    });
+
+    const start = t.calls().find((c) => c.method === 'thread/start');
+    expect(start?.params).toMatchObject({
+      cwd: '/tmp/ws',
+      sandbox: 'read-only',
+      approvalPolicy: 'never',
+    });
+
+    await obs.dispose();
+  });
+
+  it('threadId: resumes a known id and is ready immediately', async () => {
+    const t = controllable(0);
+    const obs = await createCodexObserver({
+      transport: t.transport,
+      threadId: 'th-resume-me',
+    });
+    expect(obs.sessionId).toBe('th-resume-me');
+    expect(obs.state().lifecycle).toBe('ready');
+    expect(t.calls().some((c) => c.method === 'thread/start')).toBe(false);
+    expect(t.calls().some((c) => c.method === 'thread/resume')).toBe(true);
+    await obs.dispose();
+  });
+
+  it('rejects threadId + start together', async () => {
+    const t = controllable(0);
+    await expect(
+      createCodexObserver({
+        transport: t.transport,
+        threadId: 'x',
+        start: { cwd: '/tmp' },
+      }),
+    ).rejects.toThrow(/threadId OR start/);
   });
 });

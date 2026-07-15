@@ -1,14 +1,19 @@
 /**
- * Codex thread observer (M5 C6, Model B) — attach to a thread the *native TUI*
- * created and observe it, rather than starting our own (that's
- * `createCodexSession`). This is how the workbench watches a `codex --remote`
- * session: the user drives the native terminal, chopsticks observes.
+ * Codex thread observer (M5 C6) — attach to a thread and feed the shared
+ * normalizer + reducer. Two attach modes:
  *
- * Flow (CODEX-SURFACE-FINDINGS §8): a controller connection sees `thread/started`
- * broadcast when the TUI creates a thread, then `thread/resume` opens that
- * thread's live turn/item stream (subscription is implicit — there is only
- * `thread/unsubscribe`). Those notifications feed the same normalizer + reducer
- * as the driver, so observation state is identical regardless of who drives.
+ * 1. **Passive (legacy Model B):** wait for `thread/started` from another
+ *    connection (e.g. a bare `codex --remote` TUI), then `thread/resume` until
+ *    the rollout materializes. Used by live tests that drive a separate
+ *    `createCodexSession`.
+ *
+ * 2. **Controller-owned (workbench default):** this connection
+ *    `thread/start`s (or resumes a known id), materializes with an empty
+ *    `thread/inject_items` so resume/TUI work without a user prompt, then
+ *    opens the live stream. Proven 2026-07-15
+ *    (`probe/codex/controller-owned-thread-probe3.mjs`): empty inject writes
+ *    the rollout without a model turn, so the panel can go `ready` immediately
+ *    and the TUI joins via `codex resume <id> --remote`.
  *
  * Observe-from-attach: the resume returns history, but we start the reduced
  * state from `session.started` and reduce live events forward; replaying history
@@ -30,6 +35,9 @@ import { CodexNotificationNormalizer } from './normalizer.js';
 
 const CLIENT_INFO = { name: 'chopsticks-observer', version: '0.0.0' } as const;
 
+/** Empty inject materializes a rollout without a model turn (probe 3). */
+const MATERIALIZE_ITEMS = [{ type: 'text', text: '' }] as const;
+
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const rec = (v: unknown): Record<string, unknown> | undefined =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
@@ -38,6 +46,21 @@ export interface CreateCodexObserverOptions {
   transport: Transport;
   /** Choose which thread to attach to when several appear. Default: the first. */
   selectThread?: (threadId: string) => boolean;
+  /**
+   * Attach immediately to this existing thread (resume path) instead of waiting
+   * for `thread/started`. The thread must already be materializable (has a
+   * rollout) — real Codex resumes always do.
+   */
+  threadId?: string;
+  /**
+   * Create + materialize a fresh thread on this connection so the session is
+   * ready before any TUI attaches. Mutually exclusive with {@link threadId}.
+   */
+  start?: {
+    cwd: string;
+    sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    approvalPolicy?: 'never' | 'on-request' | 'untrusted';
+  };
 }
 
 export interface CodexThreadInfo {
@@ -58,6 +81,10 @@ export interface CodexObserver {
 }
 
 export async function createCodexObserver(opts: CreateCodexObserverOptions): Promise<CodexObserver> {
+  if (opts.threadId && opts.start) {
+    throw new Error('createCodexObserver: pass threadId OR start, not both');
+  }
+
   const client = new AppServerClient(opts.transport);
   const normalizer = new CodexNotificationNormalizer();
   const stamper = createEnvelopeStamper();
@@ -94,18 +121,22 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
     }
   }
 
+  /**
+   * Open the live stream for `threadId` via `thread/resume`, then mark ready.
+   * Retries while the rollout is missing (passive mode: TUI's first turn is
+   * still writing it). Controller-owned mode materializes first so this is a
+   * single success.
+   */
   async function attach(threadId: string, thread: Record<string, unknown> | undefined): Promise<void> {
     if (attached || attaching) return;
     attaching = true;
     sessionId = threadId;
-    threadPath = str(thread?.path);
-    // A thread isn't materialized (no rollout) until its first turn produces
-    // output, and that turn can outlast any fixed window — the model may be slow,
-    // MCP servers may still be starting, or a blocking TUI prompt (model-switch /
-    // rate-limit / approval) may hold the turn back. So retry until it takes, the
-    // connection drops, or we're disposed. A bounded one-shot window here was the
-    // "stuck at preparing, no messages" bug: a slow first turn missed it and
-    // nothing re-armed attach, so the session never observed anything.
+    threadPath = str(thread?.path) ?? threadPath;
+    // A thread isn't materializable until it has a rollout. Passive-created threads
+    // only write one on the first user message; controller-owned threads write
+    // one via empty inject_items before calling attach. Retry until it takes,
+    // the connection drops, or we're disposed — a bounded one-shot was the
+    // "stuck at preparing, no messages" bug when a slow first turn missed it.
     let delay = 200;
     while (!attached && !disposed) {
       try {
@@ -126,7 +157,9 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
 
   client.onNotification((method, params) => {
     if (!attached) {
-      if (method === 'thread/started') {
+      // Passive mode only: wait for another client (the TUI) to create a thread.
+      // Controller-owned start/resume never relies on this path.
+      if (!opts.threadId && !opts.start && method === 'thread/started') {
         const thread = rec(params?.thread);
         const tid = str(thread?.id);
         if (tid && (!opts.selectThread || opts.selectThread(tid))) void attach(tid, thread);
@@ -148,6 +181,39 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
 
   await client.request('initialize', { clientInfo: CLIENT_INFO, capabilities: {} });
   client.notify('initialized');
+
+  // Controller-owned bootstrap: create + materialize, or resume a known id,
+  // before returning so callers can spawn `codex resume <id> --remote` with a
+  // ready join key and the panel can leave `preparing` immediately.
+  if (opts.start) {
+    const startResult = await client.request('thread/start', {
+      cwd: opts.start.cwd,
+      sandbox: opts.start.sandbox ?? 'workspace-write',
+      approvalPolicy: opts.start.approvalPolicy ?? 'on-request',
+    });
+    const thread = rec(rec(startResult)?.thread);
+    const tid = str(thread?.id) ?? str(thread?.sessionId);
+    if (!tid) {
+      client.close();
+      throw new Error('codex thread/start returned no thread id');
+    }
+    threadPath = str(thread?.path);
+    // Empty text item materializes the rollout without a model turn (probe 3).
+    // Without this, thread/resume and `codex resume --remote` fail with
+    // "no rollout found" until the user types.
+    await client.request('thread/inject_items', { threadId: tid, items: [...MATERIALIZE_ITEMS] });
+    await attach(tid, thread);
+    if (!attached) {
+      client.close();
+      throw new Error(`codex observer failed to attach to owned thread ${tid}`);
+    }
+  } else if (opts.threadId) {
+    await attach(opts.threadId, undefined);
+    if (!attached) {
+      client.close();
+      throw new Error(`codex observer failed to attach to thread ${opts.threadId}`);
+    }
+  }
 
   return {
     get sessionId() {
