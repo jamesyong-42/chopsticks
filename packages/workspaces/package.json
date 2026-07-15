@@ -2,7 +2,7 @@
   "name": "@vibecook/chopsticks-workspaces",
   "version": "0.0.0",
   "type": "module",
-  "description": "Workspace isolation for chopsticks sessions: shared, git-worktree, and copy providers with final-diff metadata.",
+  "description": "Workspace modes for chopsticks sessions: direct, exclusive, git-worktree, and copy providers with final metadata.",
   "license": "MIT",
   "author": "James Yong",
   "main": "./src/index.ts",
@@ -20,7 +20,9 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -275,8 +275,8 @@ const session = await runtime.createSession({
   agent: "claude-code",
   mode: "native-tui",
   workspace: {
-    repository: process.cwd(),
-    isolation: "worktree",
+    path: process.cwd(),
+    mode: "worktree",
   },
 });
 
@@ -1467,34 +1467,50 @@ export interface WorkspaceProvider {
 
 export type WorkspaceRequest =
   | {
-      repository: string;
-      isolation: "shared";
+      path: string;
+      mode?: "direct";
     }
   | {
-      repository: string;
-      isolation: "worktree";
+      path: string;
+      mode: "exclusive";
+    }
+  | {
+      path: string;
+      mode: "worktree";
       baseRef?: string;
       branchName?: string;
+      resumeBranch?: string;
+      resumeRoot?: string;
     }
   | {
-      directory: string;
-      isolation: "copy";
+      path: string;
+      mode: "copy";
     };
 
 20.3 Default policy
 
-For one session:
+Direct is the default. Any number of agents may run directly in the same
+workspace, matching the behavior of launching agent CLIs from ordinary terminal
+tabs.
 
-shared workspace allowed
+Exclusive is an opt-in cooperative lease. It can start only when no direct or
+exclusive session is active on the same canonical workspace, and while held it
+blocks new direct and exclusive sessions there. Git repository subdirectories
+and symlink aliases resolve to the real Git top-level directory for this check.
 
-For multiple write-capable sessions:
+Worktree mode remains independent and may run beside direct or exclusive
+sessions because it receives its own checkout. Copy is an advanced provider for
+non-Git directories.
 
-worktree or copied workspace required by default
+The exclusive lease is enforced by this runtime; independently launched shell
+processes are intentionally outside the cooperative policy.
 
 20.4 Recorded workspace metadata
 
 interface WorkspaceSessionMetadata {
   root: string;
+  sourcePath: string;
+  mode: "direct" | "exclusive" | "worktree" | "copy";
   initialCommit?: string;
   initialDirtyState?: WorkspaceDiff;
   branch?: string;
@@ -1503,7 +1519,7 @@ interface WorkspaceSessionMetadata {
   filesTouched: string[];
 }
 
-The runtime owns workspace isolation. It should not depend on each agent independently implementing concurrency safety.
+The runtime owns workspace allocation and cooperative exclusivity. It should not depend on each agent independently implementing concurrency safety.
 
 ⸻
 
@@ -1799,7 +1815,7 @@ Policies may include:
 
 * Maximum concurrent agent sessions
 * Maximum active turns
-* One writer per shared workspace
+* Exclusive lease per canonical workspace
 * Per-provider concurrency
 * Per-repository concurrency
 * Per-session cost limit

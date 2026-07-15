@@ -21,14 +21,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import {
-  app,
-  BrowserWindow,
-  clipboard,
-  ipcMain,
-  Menu,
-  type MenuItemConstructorOptions,
-} from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
 import {
   createNamespacedId,
   createProxyPTYSession,
@@ -44,34 +37,21 @@ import {
   type IPTYIPCBridge,
   type UDSServer,
 } from '@vibecook/avocado-sdk/transport-ipc';
-import { createClaudeSession } from '@vibecook/chopsticks-adapter-claude';
-import { createCodexTuiSession } from '@vibecook/chopsticks-adapter-codex';
-import { createGrokBackend, type GrokBackend } from '@vibecook/chopsticks-adapter-acp';
 import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-record';
-import type { AgentEventEnvelope, AgentHost, AgentSession, SessionRuntimeState } from '@vibecook/chopsticks-core';
-import {
-  assertWorkspacePolicy,
-  createWorkspace,
-  WorkspaceError,
-  type Workspace,
-  type WorkspaceRequest,
-} from '@vibecook/chopsticks-workspaces';
+import type { AgentHost, SessionRuntimeState } from '@vibecook/chopsticks-core';
+import { createBuiltinAgentRuntime, type AgentRuntime, type AgentWorkspaceFinal } from '@vibecook/chopsticks-runtime';
 import type {
   AgentEventMessage,
+  AgentSessionInfo,
   ChunkEvent,
-  CodexSessionInfo,
-  CreateClaudeSessionOptions,
-  CreateClaudeSessionResult,
-  CreateCodexSessionOptions,
-  CreateGrokSessionOptions,
+  CreateAgentSessionOptions,
+  CreateAgentSessionResult,
   CreateSessionOptions,
   ExitEvent,
-  GrokSessionInfo,
   PromptReceipt,
   SerializedSessionState,
   SessionDescriptor,
   SubmitPromptOptions,
-  WorkspaceInfo,
 } from '../protocol.js';
 
 // Bundled to CommonJS (dist/main.cjs), the conventional Electron main entry
@@ -84,7 +64,7 @@ const CHUNK_FLUSH_MS = 8;
 // One display frame: agent events/state coalesce to at most one push per frame,
 // so a burst of hooks can't flood the renderer with per-event IPC.
 const AGENT_FLUSH_MS = 16;
-// Initial geometry for a Claude PTY; the renderer resizes to the fitted tab as
+// Initial geometry for an agent PTY; the renderer resizes to the fitted tab as
 // soon as its pane has real dimensions (chopsticks:resize on the same id).
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -92,7 +72,7 @@ const DEFAULT_ROWS = 24;
 // dist/ holds preload.cjs + index.html; appRoot (apps/workbench) is its parent.
 const dirname = __dirname;
 const appRoot = path.join(dirname, '..');
-// Default cwd for Claude sessions: the chopsticks repo root (apps/workbench →
+// Default cwd for agent sessions: the chopsticks repo root (apps/workbench →
 // two levels up). Documented default; the renderer may override per session.
 const repoRoot = path.resolve(appRoot, '..', '..');
 
@@ -132,36 +112,7 @@ const hubEvents = new EventEmitter();
 let chunkBatch: ChunkEvent[] = [];
 let flushTimer: NodeJS.Timeout | undefined;
 
-// --- Claude session state -------------------------------------------------
-// The driver runs HERE, in Electron main (DESIGN §16): the pty-host stays
-// Claude-agnostic. Sessions are keyed by their runtimeSessionId — the same
-// namespaced manager id the terminal surface uses — so terminal I/O and agent
-// observation share one identity.
-// Every agent (Claude / Codex / Grok) is one core `AgentSession` (DESIGN §9):
-// the adapter owns its spawn recipe (hooks+PTY for Claude, app-server+`codex
-// --remote` for Codex, leader+`grok --leader` for Grok) and the workbench just
-// provides an `AgentHost` and observes/controls the returned handle. Keyed by
-// runtimeSessionId — the same namespaced manager id the terminal surface uses.
-const agentSessions = new Map<string, AgentSession>();
-// The Claude `--session-id` UUID (the own-action record's join key) keyed by
-// runtimeSessionId. OUTLIVES the AgentSession: both the exit
-// path (forwardExit) and the quit path (disposeHub → finalizeAllWorkspaces)
-// dispose/clear the ClaudeSession before finalizeWorkspace records the
-// workspace-final, so the join key is preserved here to stamp that record. An
-// entry is removed once its workspace-final is written (or process exit).
-const claudeSessionIds = new Map<string, string>();
-// The workspace each Claude session runs in, keyed by the SAME runtimeSessionId.
-// A shared workspace's destroy() is a no-op by contract; only worktrees are torn
-// down on exit, and never forcibly when dirty (uncommitted work is kept).
-const activeWorkspaces = new Map<string, Workspace>();
-
-// Agent executables resolve via the pty-host's inherited PATH (fine when the
-// workbench is launched from a shell); override with an absolute path for a
-// bundled .app.
-const CODEX_BIN = process.env.CHOPSTICKS_CODEX_BIN ?? 'codex';
-const GROK_BIN = process.env.CHOPSTICKS_GROK_BIN ?? 'grok';
-
-// The terminal capability the adapters spawn/write their native TUIs through
+// The terminal capability the unified runtime lends to its providers.
 // (core `AgentHost`). spawnTerminal routes every agent PTY through the SAME
 // avocado transport as any other session; writeTerminal is a DIRECT manager
 // write (never the renderer input path), so an injected paste is never mistaken
@@ -184,22 +135,6 @@ const host: AgentHost = {
   },
 };
 
-// Grok's shared `grok agent leader` lives inside its backend — created lazily on
-// the first Grok tab, torn down at hub dispose.
-let grokBackend: GrokBackend | undefined;
-function getGrokBackend(): GrokBackend {
-  return (grokBackend ??= createGrokBackend({ executable: GROK_BIN, host }));
-}
-
-/** Wire a new agent session into the event fan-out + the unified registry. */
-function registerAgentSession(session: AgentSession): void {
-  agentSessions.set(session.runtimeSessionId, session);
-  session.onEvent((envelope: AgentEventEnvelope) => {
-    agentEventBatch.push({ runtimeSessionId: session.runtimeSessionId, envelope });
-    scheduleAgentFlush();
-  });
-}
-
 // Own-action record (DESIGN §22.1): the append-only JSONL log of what the runtime
 // itself did — injections, workspace finals, exit classifications, policy
 // conflicts. One module-level recorder, default ~/.chopsticks/own-actions.jsonl.
@@ -211,6 +146,20 @@ const recorder: ActionRecorder = createActionRecorder({
 });
 let agentEventBatch: AgentEventMessage[] = [];
 let agentFlushTimer: NodeJS.Timeout | undefined;
+
+// The workbench depends on one provider-neutral runtime. Adapter recipes,
+// workspace ownership, native identities, prompt recording, and shared backend
+// lifetimes all terminate inside @vibecook/chopsticks-runtime.
+const agentRuntime: AgentRuntime = createBuiltinAgentRuntime({
+  host,
+  defaultCwd: repoRoot,
+  recorder,
+  onError: (err) => process.stderr.write(`[main] agent runtime: ${err.message}\n`),
+});
+agentRuntime.onEvent((runtimeSessionId, envelope) => {
+  agentEventBatch.push({ runtimeSessionId, envelope });
+  scheduleAgentFlush();
+});
 
 // --- hub lifecycle --------------------------------------------------------
 
@@ -265,29 +214,23 @@ function spawnPtyHost(socket: string): void {
   });
 }
 
-let hubDisposed = false;
-function disposeHub(): void {
-  if (hubDisposed) return;
-  hubDisposed = true;
-  // Tear down agent observation before the transport goes: each session's
-  // dispose() stops its own backing services (hook bridge + transcript observer
-  // for Claude, observer + app-server for Codex, ACP control client for Grok).
-  for (const session of agentSessions.values()) void session.dispose().catch(() => undefined);
-  agentSessions.clear();
-  // Then the Grok backend's shared `grok agent leader`.
-  grokBackend?.dispose();
-  grokBackend = undefined;
+let hubDisposePromise: Promise<void> | undefined;
+function disposeHub(): Promise<void> {
+  if (hubDisposePromise) return hubDisposePromise;
   ptyHost?.kill('SIGTERM');
   ptyHost = undefined;
   bridge.dispose();
   manager.dispose();
   server.dispose(); // unlinks the socket file
+  hubDisposePromise = agentRuntime.dispose().then((finals) => {
+    for (const final of finals) pushWorkspaceFinal(final);
+  });
+  return hubDisposePromise;
 }
 
 /** app.exit() skips the normal quit lifecycle, so tear the hub down explicitly first. */
 function exitAfterCleanup(code: number): void {
-  disposeHub();
-  app.exit(code);
+  void disposeHub().finally(() => app.exit(code));
 }
 
 /** Exit classification for renderer display; signal rides session:end since avocado 0.2.2. */
@@ -318,92 +261,14 @@ function forwardExit(exit: ExitEvent): void {
   hubEvents.emit('exit', exit);
   flushChunks();
   mainWindow?.webContents.send('chopsticks:exit', exit);
-  // An agent session's PTY just ended: tear down its observation (each session's
-  // dispose() knows its own backing services). The process is already gone.
-  // Claude sessions carry an own-action join key (which OUTLIVES the session, for
-  // the workspace-final record); record the exit classification BEFORE disposing.
-  // Codex/Grok have no join key here, so this fires only for Claude.
-  const claudeJoinId = claudeSessionIds.get(exit.sessionId);
-  if (claudeJoinId) {
-    void recorder.record({
-      type: 'session-exit',
-      sessionId: claudeJoinId,
-      runtimeSessionId: exit.sessionId,
-      exitCode: exit.exitCode,
-      signal: exit.signal,
-      reason: exit.reason,
-    });
-  }
-  const session = agentSessions.get(exit.sessionId);
-  if (session) {
-    agentSessions.delete(exit.sessionId);
-    void session.dispose().catch(() => undefined);
-  }
-  // Finalize the session's workspace: record its final diff, push the metadata,
-  // and (worktree only) remove the worktree — retaining it if it is dirty.
-  const workspace = activeWorkspaces.get(exit.sessionId);
-  if (workspace) {
-    activeWorkspaces.delete(exit.sessionId);
-    void finalizeWorkspace(exit.sessionId, workspace);
-  }
+  void agentRuntime
+    .handleProcessExit(exit.sessionId, exit)
+    .then((final) => final && pushWorkspaceFinal(final))
+    .catch((err: unknown) => process.stderr.write(`[main] agent exit cleanup failed: ${String(err)}\n`));
 }
 
-/**
- * Finalize one workspace and inform the renderer. finalize() snapshots the final
- * diff/commit; the metadata is already plain JSON, so it rides structured clone
- * as-is. Worktrees are then destroyed WITHOUT force: a dirty worktree throws
- * WORKSPACE_DIRTY and is kept (branch + worktree intact), surfaced as
- * `retained` so the user can recover the uncommitted work. Best-effort: a
- * finalize failure is logged and the event is skipped rather than thrown.
- */
-async function finalizeWorkspace(runtimeSessionId: string, workspace: Workspace): Promise<void> {
-  let metadata;
-  try {
-    metadata = await workspace.finalize();
-  } catch (err) {
-    process.stderr.write(`[main] workspace finalize failed (${runtimeSessionId}): ${(err as Error).message}\n`);
-    return;
-  }
-
-  let retained = false;
-  let reason: string | undefined;
-  if (workspace.isolation === 'worktree') {
-    try {
-      await workspace.destroy();
-    } catch (err) {
-      if (err instanceof WorkspaceError && err.code === 'WORKSPACE_DIRTY') {
-        // Never force: keep the worktree and branch so the work isn't lost.
-        retained = true;
-        reason = err.message;
-      } else {
-        process.stderr.write(`[main] workspace destroy failed (${runtimeSessionId}): ${(err as Error).message}\n`);
-      }
-    }
-  }
-
-  // Record the workspace-final own-action. sessionId is REQUIRED in OwnActionBase
-  // and only a Claude session has one, so we stamp the record with the preserved
-  // Claude sessionId for this runtimeSessionId. In this workbench every workspace
-  // is a Claude session's workspace, but should a non-Claude/workspace-only session
-  // ever reach here it has no sessionId to join on — we skip its record rather than
-  // fabricate a runtime id in the join field. The map entry is consumed here.
-  const sessionId = claudeSessionIds.get(runtimeSessionId);
-  claudeSessionIds.delete(runtimeSessionId);
-  if (sessionId) {
-    void recorder.record({
-      type: 'workspace-final',
-      sessionId,
-      runtimeSessionId,
-      isolation: workspace.isolation,
-      branch: workspace.branch,
-      initialCommit: workspace.initialCommit,
-      finalCommit: metadata.finalCommit,
-      filesTouched: metadata.filesTouched,
-      retained,
-    });
-  }
-
-  mainWindow?.webContents.send('chopsticks:workspaceFinal', { runtimeSessionId, metadata, retained, reason });
+function pushWorkspaceFinal(final: AgentWorkspaceFinal): void {
+  mainWindow?.webContents.send('chopsticks:workspaceFinal', final);
 }
 
 // --- session creation -----------------------------------------------------
@@ -445,7 +310,7 @@ async function createSession(opts: CreateSessionOptions): Promise<SessionDescrip
   return infoToDescriptor(info);
 }
 
-// --- Claude session creation ----------------------------------------------
+// --- Agent session observation --------------------------------------------
 
 /**
  * Flatten SessionRuntimeState for the wire: structured clone can carry a Map,
@@ -488,197 +353,49 @@ function flushAgentEvents(): void {
   agentEventBatch = [];
   mainWindow?.webContents.send('chopsticks:agentEvents', batch);
   const touched = new Set(batch.map((m) => m.runtimeSessionId));
-  for (const runtimeSessionId of touched) {
-    // Every agent session exposes state()/observationLevel() (core AgentSession).
-    const source = agentSessions.get(runtimeSessionId);
-    if (!source) continue;
-    mainWindow?.webContents.send('chopsticks:agentState', {
-      runtimeSessionId,
-      state: serializeState(source.state()),
-      observationLevel: source.observationLevel(),
-    });
-  }
+  for (const runtimeSessionId of touched) pushAgentState(runtimeSessionId);
 }
 
-/**
- * Start a Claude session with the driver in main. `ports.spawn` routes the
- * prepared command through the SAME avocado transport as every other session
- * (so the terminal tab, output fan-out, and reload replay all work unchanged);
- * `ports.write` bypasses the renderer-input path and writes straight to the
- * manager, so injected bytes are never mistaken for a human keystroke.
- */
-async function createClaudeSessionForRenderer(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> {
-  // Default (omitted) is the current behavior: a shared workspace on the repo
-  // root (honoring a legacy `cwd` override as the shared path).
-  const request: WorkspaceRequest = {
-    isolation: opts.workspace?.isolation ?? 'shared',
-    path: opts.workspace?.path ?? opts.cwd ?? repoRoot,
-  };
-
-  // §20.3 — one writer per shared root. A conflict (or a create failure) comes
-  // back to the renderer as a structured error rather than an opaque throw.
-  try {
-    assertWorkspacePolicy([...activeWorkspaces.values()], request);
-  } catch (err) {
-    if (err instanceof WorkspaceError) {
-      // A policy refusal: the session never started, so there is no Claude
-      // sessionId yet. OwnActionBase requires a join key, so we stamp a synthetic
-      // `pending:<requested cwd>` marker — the refusal is about that root, and it
-      // is trivially distinguished from a real UUID by the prefix.
-      void recorder.record({
-        type: 'policy-conflict',
-        sessionId: `pending:${request.path}`,
-        code: err.code,
-        message: err.message,
-      });
-      return { error: { code: err.code, message: err.message } };
-    }
-    throw err;
-  }
-
-  let workspace: Workspace;
-  try {
-    workspace = await createWorkspace(request);
-  } catch (err) {
-    if (err instanceof WorkspaceError) return { error: { code: err.code, message: err.message } };
-    throw err;
-  }
-
-  const session = await createClaudeSession({
-    cwd: workspace.root,
-    title: opts.title,
-    // Native resume: the driver keeps the session's id + transcript when this is
-    // set. cwd is the reconstructed workspace root (a SHARED workspace over the
-    // original directory — the renderer never asks main to re-materialize a
-    // worktree on resume), so a resumed session reuses the existing directory.
-    resume: opts.resume,
-    // Bridge Claude's richer `ports` onto the shared host: its spawn callback
-    // receives the FULL prepared session (settingsPath + CHOPSTICKS_HOOK_TOKEN
-    // env), which rides host.spawnTerminal's env grants → pty-host allowlist →
-    // Claude's hooks. `write` is the same direct-manager path every agent uses.
-    ports: {
-      spawn: (prepared) => host.spawnTerminal(prepared),
-      write: host.writeTerminal,
-    },
-  }).catch(async (err: unknown) => {
-    // The workspace exists but the session never started: don't leak a worktree.
-    // Nothing ran in it, so it is clean and a non-force destroy succeeds.
-    await workspace.destroy().catch(() => undefined);
-    throw err;
+function pushAgentState(runtimeSessionId: string): void {
+  const state = agentRuntime.sessionState(runtimeSessionId);
+  const observationLevel = agentRuntime.observationLevel(runtimeSessionId);
+  if (!state || !observationLevel) return;
+  mainWindow?.webContents.send('chopsticks:agentState', {
+    runtimeSessionId,
+    state: serializeState(state),
+    observationLevel,
   });
-
-  activeWorkspaces.set(session.runtimeSessionId, workspace);
-  registerAgentSession(session);
-  // Preserve the join key so the exit/quit paths can stamp the workspace-final
-  // record after the ClaudeSession itself is disposed.
-  claudeSessionIds.set(session.runtimeSessionId, session.sessionId);
-
-  const info = manager.getSessionInfo(session.runtimeSessionId);
-  if (!info) throw new Error(`claude session ${session.runtimeSessionId} not registered in manager`);
-  const workspaceInfo: WorkspaceInfo = {
-    isolation: workspace.isolation,
-    root: workspace.root,
-    branch: workspace.branch,
-    initialCommit: workspace.initialCommit,
-  };
-  return {
-    sessionId: session.sessionId,
-    runtimeSessionId: session.runtimeSessionId,
-    descriptor: infoToDescriptor(info),
-    workspace: workspaceInfo,
-  };
 }
 
-/**
- * Start a Codex session. Unlike Claude (one PTY observed via hooks), a Codex
- * session is: (1) a private `codex app-server` on a unix socket, (2) a
- * controller-owned thread (`thread/start` + empty inject so the panel is ready
- * before any keystroke), (3) a native `codex resume <id> --remote` TUI in a PTY
- * — the terminal tab, spawned through the SAME avocado transport as every other
- * session. The user drives the terminal; chopsticks already owns/observes the
- * thread, so lifecycle leaves `preparing` immediately (Grok/Claude parity).
- */
-async function createCodexSessionForRenderer(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> {
-  const session = await createCodexTuiSession({
-    cwd: opts.cwd ?? repoRoot,
-    resume: opts.resume,
-    executable: CODEX_BIN,
-    host,
-  });
-  registerAgentSession(session);
-  const info = manager.getSessionInfo(session.runtimeSessionId);
-  if (!info) throw new Error(`codex session ${session.runtimeSessionId} not registered in manager`);
-  // Thread id is known at create time (controller-owned start, or resume id).
+/** Add host-only terminal metadata to the library's provider-neutral result. */
+async function createAgentSessionForRenderer(opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
+  const result = await agentRuntime.createSession(opts);
+  if ('error' in result) return result;
+  const info = manager.getSessionInfo(result.runtimeSessionId);
+  if (!info) throw new Error(`agent session ${result.runtimeSessionId} not registered in manager`);
+  pushAgentState(result.runtimeSessionId);
   return {
-    runtimeSessionId: session.runtimeSessionId,
+    ...result,
+    agent: result.agent as AgentSessionInfo['agent'],
     descriptor: infoToDescriptor(info),
-    threadId: session.sessionId || undefined,
-  };
-}
-
-/**
- * Start a Grok session (M6 A6c): the tab is a native `grok --leader` TUI on the
- * backend's shared leader; an ACP control client attaches to the SAME session to
- * observe + inject. The adapter's backend owns the whole recipe (leader, TUI
- * spawn via the host, welcome-preserving `--session-id`/`--resume`, and the
- * async control attach) — see `createGrokBackend`. This returns as soon as the
- * terminal is up; control comes online in the background.
- */
-async function createGrokSessionForRenderer(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> {
-  const session = await getGrokBackend().createSession({ cwd: opts.cwd ?? repoRoot, resume: opts.resume });
-  registerAgentSession(session);
-  const info = manager.getSessionInfo(session.runtimeSessionId);
-  if (!info) throw new Error(`grok session ${session.runtimeSessionId} not registered in manager`);
-  return {
-    runtimeSessionId: session.runtimeSessionId,
-    descriptor: infoToDescriptor(info),
-    sessionId: session.sessionId,
   };
 }
 
 function registerIpc(): void {
   ipcMain.handle('chopsticks:createSession', (_e, opts: CreateSessionOptions) => createSession(opts));
-  ipcMain.handle('chopsticks:createClaudeSession', (_e, opts: CreateClaudeSessionOptions) =>
-    createClaudeSessionForRenderer(opts ?? {}),
+  ipcMain.handle('chopsticks:createAgentSession', (_e, opts: CreateAgentSessionOptions) =>
+    createAgentSessionForRenderer(opts),
   );
-  ipcMain.handle('chopsticks:createCodexSession', (_e, opts: CreateCodexSessionOptions) =>
-    createCodexSessionForRenderer(opts ?? {}),
+  ipcMain.handle('chopsticks:workspaceDiff', (_e, runtimeSessionId: string) =>
+    agentRuntime.workspaceDiff(runtimeSessionId),
   );
-  ipcMain.handle('chopsticks:createGrokSession', (_e, opts: CreateGrokSessionOptions) =>
-    createGrokSessionForRenderer(opts ?? {}),
-  );
-  ipcMain.handle('chopsticks:workspaceDiff', (_e, runtimeSessionId: string) => {
-    const workspace = activeWorkspaces.get(runtimeSessionId);
-    return workspace ? workspace.diff() : null;
-  });
   ipcMain.handle('chopsticks:submitPrompt', async (_e, opts: SubmitPromptOptions): Promise<PromptReceipt> => {
-    const session = agentSessions.get(opts.runtimeSessionId);
-    // No session → nothing was injected and no id to join on; inform the UI.
-    if (!session) return { status: 'rejected', reason: 'no such session' };
-    // Every agent injects through its OWN submitPrompt (guarded paste for Claude,
-    // bracketed paste into the native TUI for Codex, deterministic session/prompt
-    // for Grok) — the adapter owns the mechanism. Record the honest receipt
-    // (DESIGN §17): `uncertain` rides through as itself, never collapsed.
-    const receipt = await session.submitPrompt({ text: opts.text });
-    void recorder.record({
-      type: 'injection',
-      // The join key is the agent's native id; '' until a Codex thread
-      // materializes, so fall back to a pending marker.
-      sessionId: session.sessionId || `pending:${opts.runtimeSessionId}`,
-      runtimeSessionId: opts.runtimeSessionId,
-      text: opts.text,
-      outcome: receipt.status,
-      reason: 'reason' in receipt ? receipt.reason : undefined,
-      turnId: 'turnId' in receipt ? receipt.turnId : undefined,
-    });
-    return receipt;
+    return agentRuntime.submitPrompt(opts.runtimeSessionId, { text: opts.text });
   });
   ipcMain.handle('chopsticks:write', (_e, sessionId: string, dataBase64: string) => {
     // User priority (DESIGN §17.2): a real keystroke on an agent terminal must
     // resolve any in-flight injection as 'uncertain' BEFORE its bytes land.
-    // notifyUserInput is a no-op for native-TUI drivers (Codex/Grok), so this is
-    // safe for every agent kind.
-    agentSessions.get(sessionId)?.notifyUserInput();
+    agentRuntime.notifyUserInput(sessionId);
     manager.write(sessionId, Buffer.from(dataBase64, 'base64'));
   });
   ipcMain.handle('chopsticks:resize', (_e, sessionId: string, cols: number, rows: number) => {
@@ -823,21 +540,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-/**
- * Finalize every remaining workspace, best-effort. Same retained-on-dirty rule
- * as the per-session exit path (worktrees are never force-destroyed), so a quit
- * mid-work keeps the branch + worktree. allSettled so one failure never blocks
- * the quit.
- */
-async function finalizeAllWorkspaces(): Promise<void> {
-  const entries = [...activeWorkspaces.entries()];
-  activeWorkspaces.clear();
-  await Promise.allSettled(entries.map(([id, ws]) => finalizeWorkspace(id, ws)));
-}
-
-// Quit is made async once: tear down Claude sessions + the hub, THEN finalize the
-// workspaces (order matters — observation is gone before we snapshot the diff),
-// then re-enter quit, which the `quitting` guard lets through.
+// Quit is made async once so the unified runtime can dispose provider services,
+// finalize workspaces, and flush its own-action records before Electron exits.
 let quitting = false;
 app.on('before-quit', (e) => {
   if (quitting) return;
@@ -845,8 +549,7 @@ app.on('before-quit', (e) => {
   quitting = true;
   void (async () => {
     try {
-      disposeHub();
-      await finalizeAllWorkspaces();
+      await disposeHub();
     } finally {
       app.quit();
     }

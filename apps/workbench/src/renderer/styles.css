@@ -434,7 +434,7 @@ body,
   font-weight: 700;
 }
 
-/* Workspace disclosure (Claude today) */
+/* Optional workspace disclosure */
 .ws-disclosure {
   margin: 10px 14px 0;
   border: 1px solid var(--line);

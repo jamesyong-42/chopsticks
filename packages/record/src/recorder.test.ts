@@ -21,7 +21,7 @@ describe('createActionRecorder', () => {
     await recorder.record({
       type: 'workspace-final',
       sessionId: 's-1',
-      isolation: 'worktree',
+      mode: 'worktree',
       branch: 'chopsticks/ab12',
       filesTouched: ['a.ts', 'b.ts'],
       retained: true,

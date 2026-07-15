@@ -17,12 +17,10 @@
   "dependencies": {
     "@parcel/watcher": "^2.5.0",
     "@vibecook/avocado-sdk": "file:../../../avocado/packages/sdk",
-    "@vibecook/chopsticks-adapter-acp": "workspace:*",
-    "@vibecook/chopsticks-adapter-claude": "workspace:*",
-    "@vibecook/chopsticks-adapter-codex": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*",
     "@vibecook/chopsticks-node": "workspace:*",
     "@vibecook/chopsticks-record": "workspace:*",
+    "@vibecook/chopsticks-runtime": "workspace:*",
     "@vibecook/chopsticks-testing": "workspace:*",
     "@vibecook/chopsticks-workspaces": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",

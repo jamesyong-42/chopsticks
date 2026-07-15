@@ -12,13 +12,9 @@ import type {
   AgentStateMessage,
   ChopsticksBridge,
   ChunkEvent,
-  CodexSessionInfo,
-  CreateClaudeSessionOptions,
-  CreateClaudeSessionResult,
-  CreateCodexSessionOptions,
-  CreateGrokSessionOptions,
+  CreateAgentSessionOptions,
+  CreateAgentSessionResult,
   CreateSessionOptions,
-  GrokSessionInfo,
   ExitEvent,
   PromptReceipt,
   ReplayResult,
@@ -48,12 +44,8 @@ const bridge: ChopsticksBridge = {
     ipcRenderer.on('chopsticks:exit', listener);
     return () => ipcRenderer.removeListener('chopsticks:exit', listener);
   },
-  createClaudeSession: (opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult> =>
-    ipcRenderer.invoke('chopsticks:createClaudeSession', opts),
-  createCodexSession: (opts: CreateCodexSessionOptions): Promise<CodexSessionInfo> =>
-    ipcRenderer.invoke('chopsticks:createCodexSession', opts),
-  createGrokSession: (opts: CreateGrokSessionOptions): Promise<GrokSessionInfo> =>
-    ipcRenderer.invoke('chopsticks:createGrokSession', opts),
+  createAgentSession: (opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> =>
+    ipcRenderer.invoke('chopsticks:createAgentSession', opts),
   submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
     ipcRenderer.invoke('chopsticks:submitPrompt', opts),
   onAgentEvents: (cb: (events: AgentEventMessage[]) => void): (() => void) => {

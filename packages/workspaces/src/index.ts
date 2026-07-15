@@ -1,7 +1,6 @@
 /**
- * @vibecook/chopsticks-workspaces — session workspace isolation (DESIGN §20):
- * shared / git-worktree / copy providers, final-diff metadata, and the
- * one-writer-per-shared-root policy check.
+ * @vibecook/chopsticks-workspaces — direct, exclusive, worktree, and copy
+ * workspace providers plus canonical workspace identity and final metadata.
  */
 
 export * from './workspace.js';

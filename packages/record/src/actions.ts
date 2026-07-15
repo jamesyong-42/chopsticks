@@ -13,7 +13,7 @@
 export interface OwnActionBase {
   /** ISO timestamp, stamped at append. */
   ts: string;
-  /** The Claude `--session-id` UUID — the join key into Spaghetti's index. */
+  /** The provider's opaque native session id — its join key into durable history. */
   sessionId: string;
   /** The host's runtime session id (terminal/attach routing), when distinct. */
   runtimeSessionId?: string;
@@ -31,7 +31,7 @@ export interface InjectionAction extends OwnActionBase {
 /** Workspace finalize metadata at session end (DESIGN §20.4). */
 export interface WorkspaceFinalAction extends OwnActionBase {
   type: 'workspace-final';
-  isolation: 'shared' | 'worktree' | 'copy';
+  mode: 'direct' | 'exclusive' | 'worktree' | 'copy';
   branch?: string;
   initialCommit?: string;
   finalCommit?: string;

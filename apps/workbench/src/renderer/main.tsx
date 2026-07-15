@@ -21,8 +21,9 @@ import { AvocadoProvider, TerminalSurface, type TerminalCoreActions } from '@vib
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
 import type {
   AgentEventMessage,
+  AgentKind,
   AgentStateMessage,
-  CreateClaudeSessionOptions,
+  CreateAgentSessionOptions,
   ExitEvent,
   WorkspaceFinalEvent,
 } from '../protocol.js';
@@ -51,8 +52,6 @@ const shellName = 'shell';
 const EVENT_TAIL_MAX = 50;
 const SPAWN_COLS = 80;
 const SPAWN_ROWS = 24;
-
-type AgentKind = 'claude' | 'codex' | 'grok';
 
 interface PaneState {
   id: string;
@@ -180,14 +179,12 @@ export function App(): JSX.Element {
   const [tabs, setTabs] = useState<TabState[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isolation, setIsolation] = useState<'shared' | 'worktree'>('shared');
+  const [workspaceMode, setWorkspaceMode] = useState<'direct' | 'exclusive' | 'worktree'>('direct');
 
   const [agentState, setAgentState] = useState(() => new Map<string, AgentStateMessage>());
   const [agentEvents, setAgentEvents] = useState(() => new Map<string, AgentEventEnvelope[]>());
   const [agentWorkspace, setAgentWorkspace] = useState(() => new Map<string, WorkspacePanelData>());
-  const [claudeSessionId, setClaudeSessionId] = useState(() => new Map<string, string>());
-  const [codexThreadId, setCodexThreadId] = useState(() => new Map<string, string>());
-  const [grokSessionId, setGrokSessionId] = useState(() => new Map<string, string>());
+  const [agentSessionId, setAgentSessionId] = useState(() => new Map<string, string>());
 
   const paneActionsRef = useRef(new Map<string, TerminalCoreActions>());
   const tabsRef = useRef(tabs);
@@ -304,17 +301,7 @@ export function App(): JSX.Element {
           n.delete(pane.sessionId);
           return n;
         });
-        setClaudeSessionId((m) => {
-          const n = new Map(m);
-          n.delete(pane.sessionId);
-          return n;
-        });
-        setCodexThreadId((m) => {
-          const n = new Map(m);
-          n.delete(pane.sessionId);
-          return n;
-        });
-        setGrokSessionId((m) => {
+        setAgentSessionId((m) => {
           const n = new Map(m);
           n.delete(pane.sessionId);
           return n;
@@ -411,10 +398,10 @@ export function App(): JSX.Element {
 
   // ─── Agent spawn ──────────────────────────────────────────────────────
 
-  const startClaude = useCallback(
-    async (opts: CreateClaudeSessionOptions, title: string, note?: string) => {
+  const startAgent = useCallback(
+    async (opts: CreateAgentSessionOptions, title: string, note?: string) => {
       try {
-        const result = await chopsticks.createClaudeSession(opts);
+        const result = await chopsticks.createAgentSession(opts);
         if ('error' in result) {
           fail(`${result.error.code}: ${result.error.message}`);
           return;
@@ -424,7 +411,7 @@ export function App(): JSX.Element {
           next.set(result.runtimeSessionId, { info: result.workspace, note });
           return next;
         });
-        setClaudeSessionId((prev) => {
+        setAgentSessionId((prev) => {
           const next = new Map(prev);
           next.set(result.runtimeSessionId, result.sessionId);
           return next;
@@ -435,7 +422,7 @@ export function App(): JSX.Element {
           sessionId: result.runtimeSessionId,
           terminalId: result.runtimeSessionId,
           title,
-          agentKind: 'claude',
+          agentKind: result.agent,
         });
       } catch (err) {
         fail(err);
@@ -444,45 +431,14 @@ export function App(): JSX.Element {
     [addAgentTab, fail, startDiffPoll],
   );
 
-  const newClaude = useCallback(
-    () => void startClaude({ workspace: { isolation } }, isolation === 'worktree' ? 'claude ⑂' : 'claude'),
-    [isolation, startClaude],
+  const newAgent = useCallback(
+    (agent: AgentKind) =>
+      void startAgent(
+        { agent, workspace: { mode: workspaceMode } },
+        workspaceMode === 'worktree' ? `${agent} ⑂` : workspaceMode === 'exclusive' ? `${agent} ◈` : agent,
+      ),
+    [workspaceMode, startAgent],
   );
-
-  const newCodex = useCallback(async () => {
-    try {
-      const result = await chopsticks.createCodexSession({});
-      addAgentTab({
-        id: crypto.randomUUID(),
-        sessionId: result.runtimeSessionId,
-        terminalId: result.runtimeSessionId,
-        title: 'codex',
-        agentKind: 'codex',
-      });
-    } catch (err) {
-      fail(err);
-    }
-  }, [addAgentTab, fail]);
-
-  const newGrok = useCallback(async () => {
-    try {
-      const result = await chopsticks.createGrokSession({});
-      setGrokSessionId((prev) => {
-        const next = new Map(prev);
-        next.set(result.runtimeSessionId, result.sessionId);
-        return next;
-      });
-      addAgentTab({
-        id: crypto.randomUUID(),
-        sessionId: result.runtimeSessionId,
-        terminalId: result.runtimeSessionId,
-        title: 'grok',
-        agentKind: 'grok',
-      });
-    } catch (err) {
-      fail(err);
-    }
-  }, [addAgentTab, fail]);
 
   const newFakeAgent = useCallback(async () => {
     try {
@@ -502,92 +458,37 @@ export function App(): JSX.Element {
     }
   }, [addAgentTab, fail]);
 
-  const resumeClaude = useCallback(
-    async (runtimeSessionId: string) => {
-      const sessionId = claudeSessionId.get(runtimeSessionId);
-      const data = agentWorkspace.get(runtimeSessionId);
-      if (!sessionId || !data) return;
-      const { info, final } = data;
-      let workspace: { isolation: 'shared'; path?: string };
-      let note: string | undefined;
-      if (info.isolation === 'worktree') {
-        if (final?.retained) {
-          workspace = { isolation: 'shared', path: info.root };
-        } else {
-          workspace = { isolation: 'shared' };
-          note = 'worktree gone — resumed on repo root';
-        }
-      } else {
-        workspace = { isolation: 'shared', path: info.root };
-      }
-      await startClaude({ resume: sessionId, workspace }, 'claude ⟲', note);
-    },
-    [claudeSessionId, agentWorkspace, startClaude],
-  );
-
-  const resumeCodex = useCallback(
-    async (runtimeSessionId: string) => {
-      const threadId = codexThreadId.get(runtimeSessionId);
-      if (!threadId) return;
-      try {
-        const result = await chopsticks.createCodexSession({ resume: threadId });
-        addAgentTab({
-          id: crypto.randomUUID(),
-          sessionId: result.runtimeSessionId,
-          terminalId: result.runtimeSessionId,
-          title: 'codex ⟲',
-          agentKind: 'codex',
-        });
-      } catch (err) {
-        fail(err);
-      }
-    },
-    [addAgentTab, codexThreadId, fail],
-  );
-
-  const resumeGrok = useCallback(
-    async (runtimeSessionId: string) => {
-      const sessionId = grokSessionId.get(runtimeSessionId);
-      if (!sessionId) return;
-      try {
-        const result = await chopsticks.createGrokSession({ resume: sessionId });
-        setGrokSessionId((prev) => {
-          const next = new Map(prev);
-          next.set(result.runtimeSessionId, result.sessionId);
-          return next;
-        });
-        addAgentTab({
-          id: crypto.randomUUID(),
-          sessionId: result.runtimeSessionId,
-          terminalId: result.runtimeSessionId,
-          title: 'grok ⟲',
-          agentKind: 'grok',
-        });
-      } catch (err) {
-        fail(err);
-      }
-    },
-    [addAgentTab, fail, grokSessionId],
-  );
-
   const resumeAgent = useCallback(
     async (runtimeSessionId: string) => {
+      const sessionId = agentSessionId.get(runtimeSessionId);
+      const data = agentWorkspace.get(runtimeSessionId);
+      if (!sessionId || !data) return;
       for (const tab of tabsRef.current) {
         const pane = Object.values(tab.panes).find((p) => p.sessionId === runtimeSessionId);
         if (!pane) continue;
-        if (pane.agentKind === 'codex') return resumeCodex(runtimeSessionId);
-        if (pane.agentKind === 'grok') return resumeGrok(runtimeSessionId);
-        if (pane.agentKind === 'claude') return resumeClaude(runtimeSessionId);
+        if (!pane.agentKind) return;
+        const { info, final } = data;
+        let workspace: NonNullable<CreateAgentSessionOptions['workspace']>;
+        let note: string | undefined;
+        if (info.mode === 'worktree') {
+          workspace = {
+            mode: 'worktree',
+            path: info.sourcePath,
+            resumeBranch: info.branch,
+            resumeRoot: final?.retained ? info.root : undefined,
+          };
+          note = final?.retained ? 'resumed in retained worktree' : 'worktree restored from its branch';
+        } else workspace = { mode: info.mode === 'exclusive' ? 'exclusive' : 'direct', path: info.root };
+        return startAgent({ agent: pane.agentKind, resume: sessionId, workspace }, `${pane.agentKind} ⟲`, note);
       }
-      return resumeClaude(runtimeSessionId);
     },
-    [resumeClaude, resumeCodex, resumeGrok],
+    [agentSessionId, agentWorkspace, startAgent],
   );
 
   const resumeAgentRef = useRef(resumeAgent);
   resumeAgentRef.current = resumeAgent;
 
-  // ─── Claude panel (imperative DOM, kept for agent observation) ────────
+  // ─── Agent panel (imperative DOM, kept for agent observation) ─────────
 
   useEffect(() => {
     const el = activityRef.current;
@@ -610,13 +511,8 @@ export function App(): JSX.Element {
     if (!panel) return;
     const pane = focusedSession;
     if (pane?.agentKind) {
-      const workspace = pane.agentKind === 'claude' ? agentWorkspace.get(pane.sessionId) : undefined;
-      const canResume =
-        pane.agentKind === 'claude'
-          ? claudeSessionId.has(pane.sessionId)
-          : pane.agentKind === 'grok'
-            ? grokSessionId.has(pane.sessionId)
-            : codexThreadId.has(pane.sessionId);
+      const workspace = agentWorkspace.get(pane.sessionId);
+      const canResume = agentSessionId.has(pane.sessionId);
       // Treat as exited if session no longer running in maps and we saw exit —
       // panel uses exited for Resume affordance; we pass false until exit wire.
       panel.render(
@@ -631,7 +527,7 @@ export function App(): JSX.Element {
     } else {
       panel.hide();
     }
-  }, [focusedSession, agentState, agentEvents, agentWorkspace, claudeSessionId, codexThreadId, grokSessionId]);
+  }, [focusedSession, agentState, agentEvents, agentWorkspace, agentSessionId]);
 
   // ─── Lifecycle: first tab, exit, IPC, restore, keybindings ────────────
 
@@ -716,20 +612,6 @@ export function App(): JSX.Element {
             next.set(runtimeSessionId, buf);
           }
           return next;
-        });
-        setCodexThreadId((prev) => {
-          let changed = false;
-          const next = new Map(prev);
-          for (const { runtimeSessionId, envelope } of events) {
-            for (const tab of tabsRef.current) {
-              const pane = Object.values(tab.panes).find((p) => p.sessionId === runtimeSessionId);
-              if (pane?.agentKind === 'codex' && envelope.nativeSessionId) {
-                next.set(runtimeSessionId, envelope.nativeSessionId);
-                changed = true;
-              }
-            }
-          }
-          return changed ? next : prev;
         });
       }),
       chopsticks.onAgentState((state: AgentStateMessage) => {
@@ -862,20 +744,24 @@ export function App(): JSX.Element {
                 fake
               </button>
               <select
-                value={isolation}
-                title="Claude workspace isolation"
-                onChange={(e) => setIsolation(e.target.value === 'worktree' ? 'worktree' : 'shared')}
+                value={workspaceMode}
+                title="Agent workspace mode"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setWorkspaceMode(value === 'exclusive' || value === 'worktree' ? value : 'direct');
+                }}
               >
-                <option value="shared">shared</option>
+                <option value="direct">direct</option>
+                <option value="exclusive">exclusive</option>
                 <option value="worktree">worktree</option>
               </select>
-              <button type="button" className="accent" onClick={() => void newClaude()}>
+              <button type="button" className="accent" onClick={() => newAgent('claude')}>
                 claude
               </button>
-              <button type="button" onClick={() => void newCodex()}>
+              <button type="button" onClick={() => newAgent('codex')}>
                 codex
               </button>
-              <button type="button" onClick={() => void newGrok()}>
+              <button type="button" onClick={() => newAgent('grok')}>
                 grok
               </button>
             </>

@@ -29,15 +29,6 @@ importers:
       '@vibecook/avocado-sdk':
         specifier: file:../../../avocado/packages/sdk
         version: file:../avocado/packages/sdk(@xterm/addon-fit@0.10.0(@xterm/xterm@5.5.0))(node-pty@1.1.0)(react@19.2.7)(restty@file:../avocado/packages/restty(typescript@5.9.3))(xterm@5.3.0)
-      '@vibecook/chopsticks-adapter-acp':
-        specifier: workspace:*
-        version: link:../../packages/adapter-acp
-      '@vibecook/chopsticks-adapter-claude':
-        specifier: workspace:*
-        version: link:../../packages/adapter-claude
-      '@vibecook/chopsticks-adapter-codex':
-        specifier: workspace:*
-        version: link:../../packages/adapter-codex
       '@vibecook/chopsticks-core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -47,6 +38,9 @@ importers:
       '@vibecook/chopsticks-record':
         specifier: workspace:*
         version: link:../../packages/record
+      '@vibecook/chopsticks-runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@vibecook/chopsticks-testing':
         specifier: workspace:*
         version: link:../../packages/testing
@@ -153,6 +147,31 @@ importers:
         version: link:../testing
 
   packages/record: {}
+
+  packages/runtime:
+    dependencies:
+      '@vibecook/chopsticks-adapter-acp':
+        specifier: workspace:*
+        version: link:../adapter-acp
+      '@vibecook/chopsticks-adapter-claude':
+        specifier: workspace:*
+        version: link:../adapter-claude
+      '@vibecook/chopsticks-adapter-codex':
+        specifier: workspace:*
+        version: link:../adapter-codex
+      '@vibecook/chopsticks-core':
+        specifier: workspace:*
+        version: link:../core
+      '@vibecook/chopsticks-record':
+        specifier: workspace:*
+        version: link:../record
+      '@vibecook/chopsticks-workspaces':
+        specifier: workspace:*
+        version: link:../workspaces
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@24.13.3)(tsx@4.23.0)
 
   packages/testing:
     dependencies:

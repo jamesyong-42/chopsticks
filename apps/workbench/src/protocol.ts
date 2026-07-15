@@ -9,27 +9,30 @@
  * namespaced ids, `ipc|<transportId>|<sessionId>`). Terminal bytes still cross
  * the boundary base64-encoded so raw/malformed UTF-8 survives intact (ADR-004).
  *
- * Claude sessions ride the SAME id space: a Claude session's `runtimeSessionId`
- * IS the namespaced manager id, so its terminal output/input/replay flow through
- * the existing chunk/write/exit surface unchanged. What is new is the agent
- * observation surface (createClaudeSession / submitPrompt / onAgentEvents /
- * onAgentState) layered on top — the driver runs in Electron main, so the
- * renderer only ever sees serialized snapshots, never the live ClaudeSession.
+ * Agent sessions ride the SAME id space: `runtimeSessionId` is the namespaced
+ * manager id, so terminal output/input/replay flow through the existing surface.
+ * Provider details stay behind @vibecook/chopsticks-runtime; this bridge exposes
+ * one create/observe/control contract regardless of the selected agent.
  */
 
 // Type-only imports: erased at build time, so the runtime adapter/core code is
 // never pulled into the sandboxed preload or the browser renderer bundle.
-import type { AgentEventEnvelope, ObservationLevel } from '@vibecook/chopsticks-core';
 import type {
-  WorkspaceDiff,
-  WorkspaceErrorCode,
-  WorkspaceIsolation,
-  WorkspaceSessionMetadata,
-} from '@vibecook/chopsticks-workspaces';
+  AgentEventEnvelope,
+  ObservationLevel,
+  PromptReceipt as CorePromptReceipt,
+} from '@vibecook/chopsticks-core';
+import type {
+  AgentSessionInfo as RuntimeAgentSessionInfo,
+  AgentWorkspaceFinal,
+  AgentWorkspaceInfo,
+  BuiltinAgentKind,
+} from '@vibecook/chopsticks-runtime';
+import type { WorkspaceDiff, WorkspaceErrorCode } from '@vibecook/chopsticks-workspaces';
 
 // Re-exported (type-only, erased) so preload/renderer import the workspace
 // shapes from the one protocol module rather than reaching into the package.
-export type { WorkspaceDiff, WorkspaceIsolation, WorkspaceSessionMetadata } from '@vibecook/chopsticks-workspaces';
+export type { WorkspaceDiff, WorkspaceMode } from '@vibecook/chopsticks-workspaces';
 
 /** Renderer-chosen shorthands expanded to a command by the pty-host (never the renderer). */
 export type SessionKind = 'shell' | 'fake-agent';
@@ -80,76 +83,59 @@ export interface ReplayResult {
   snapshotBase64: string;
 }
 
-// ───────────────────────── Claude session surface ─────────────────────────
+// ───────────────────────── Agent session surface ──────────────────────────
 
-/** Renderer-visible options for starting a Claude session; cwd defaults main-side. */
-export interface CreateClaudeSessionOptions {
-  /** Working directory; when omitted, main defaults it to the chopsticks repo root. */
+export type AgentKind = BuiltinAgentKind;
+
+/** Renderer-visible options shared by every agent provider. */
+export interface CreateAgentSessionOptions {
+  agent: AgentKind;
   cwd?: string;
   title?: string;
   /**
-   * Workspace isolation (DESIGN §20). Omitted → `{ isolation: 'shared' }` on the
-   * repo root (current behavior). The UI offers only shared/worktree; `copy` is a
-   * valid provider but deliberately not surfaced here yet. `path` defaults to
-   * `cwd` (then the repo root) main-side.
+   * Workspace mode. Omitted means direct access to cwd/default root.
    */
-  workspace?: { isolation: 'shared' | 'worktree'; path?: string };
+  workspace?: {
+    mode: 'direct' | 'exclusive' | 'worktree';
+    path?: string;
+    resumeBranch?: string;
+    resumeRoot?: string;
+  };
   /**
-   * Resume an existing Claude session by its `--session-id` UUID (native
-   * `--resume`; the session keeps its transcript and id). The resumed session is
-   * a NEW runtime tab but the SAME Claude session. The renderer reuses the
-   * original session's directory as a SHARED workspace on resume rather than
-   * materializing a fresh worktree — see the resume path in renderer/main.ts.
+   * Resume by the provider's opaque native session id. The adapter owns the
+   * actual resume mechanism and identity contract.
    */
   resume?: string;
 }
 
-/** The workspace a Claude session is running in, as the renderer first sees it. */
-export interface WorkspaceInfo {
-  isolation: WorkspaceIsolation;
-  /** The session's cwd (worktree/copy root, or the shared repo root). */
-  root: string;
-  /** worktree only: the branch that holds the session's work product. */
-  branch?: string;
-  initialCommit?: string;
-}
+/** The workspace an agent session is running in. */
+export type WorkspaceInfo = AgentWorkspaceInfo;
 
 /**
- * What `createClaudeSession` returns. `runtimeSessionId` is the namespaced
- * manager id — the SAME id the terminal chunk/write/exit surface uses, so the
- * renderer keys its Claude tab by it. `sessionId` is the Claude `--session-id`
- * UUID (the spaghetti join contract), surfaced for display/diagnostics only.
+ * One provider-neutral result. sessionId is an opaque native/join id;
+ * runtimeSessionId is the host terminal routing id.
  */
-export interface ClaudeSessionInfo {
-  sessionId: string;
-  runtimeSessionId: string;
+export interface AgentSessionInfo extends Omit<RuntimeAgentSessionInfo, 'agent'> {
+  agent: AgentKind;
   descriptor: SessionDescriptor;
-  workspace: WorkspaceInfo;
 }
 
 /**
- * Structured failure for createClaudeSession when the workspace can't be set up
- * (policy conflict, or create failed). Distinguished from success by the `error`
- * key so the renderer can surface the code/message instead of an opaque throw.
+ * Structured creation failure (unknown provider, workspace policy, or setup).
  */
-export interface ClaudeSessionFailure {
-  error: { code: WorkspaceErrorCode; message: string };
+export interface AgentSessionFailure {
+  error: { code: WorkspaceErrorCode | 'AGENT_NOT_FOUND'; message: string };
 }
 
-export type CreateClaudeSessionResult = ClaudeSessionInfo | ClaudeSessionFailure;
+export type CreateAgentSessionResult = AgentSessionInfo | AgentSessionFailure;
 
 /**
- * Pushed once, when a Claude session's PTY exits: the finalized workspace record.
+ * Pushed once, when any agent session's PTY exits: its finalized workspace record.
  * For a worktree that could not be destroyed because it held uncommitted work,
  * `retained` is true and `reason` explains — the worktree and branch are kept
  * (uncommitted work is never silently discarded).
  */
-export interface WorkspaceFinalEvent {
-  runtimeSessionId: string;
-  metadata: WorkspaceSessionMetadata;
-  retained: boolean;
-  reason?: string;
-}
+export type WorkspaceFinalEvent = AgentWorkspaceFinal;
 
 /** SessionRuntimeState (DESIGN §15) with its Maps flattened to arrays for structured-clone across IPC. */
 export interface SerializedSessionState {
@@ -179,64 +165,6 @@ export interface AgentStateMessage {
   observationLevel: ObservationLevel;
 }
 
-// ───────────────────────── Codex session surface ──────────────────────────
-
-/** Renderer-visible options for starting a Codex session (native TUI + observer). */
-export interface CreateCodexSessionOptions {
-  /** Working directory; defaults to the chopsticks repo root main-side. */
-  cwd?: string;
-  /**
-   * Resume an existing Codex thread by id (`codex resume <id> --remote`). The
-   * resumed session is a NEW terminal tab that reopens the SAME thread (its
-   * history + rollout). The id is the thread id the observer reported.
-   */
-  resume?: string;
-}
-
-/**
- * What `createCodexSession` returns. A Codex session is a native
- * `codex resume <id> --remote` terminal (runtimeSessionId = the PTY id, sharing
- * the chunk/write/exit surface) PLUS a controller-owned thread on a private
- * app-server: chopsticks starts/materializes the thread, so `threadId` (the
- * spaghetti join) is available at creation and the agent panel can leave
- * `preparing` immediately. The user still drives the native TUI.
- */
-export interface CodexSessionInfo {
-  runtimeSessionId: string;
-  descriptor: SessionDescriptor;
-  threadId?: string;
-}
-
-// ───────────────────────── Grok session surface ───────────────────────────
-
-/** Renderer-visible options for starting a Grok session (native TUI + ACP control). */
-export interface CreateGrokSessionOptions {
-  /** Working directory; defaults to the chopsticks repo root main-side. */
-  cwd?: string;
-  /**
-   * Resume an existing Grok session by id (`grok --resume <id>` for the TUI +
-   * ACP `session/load`). The resumed session is a NEW terminal tab attached to
-   * the SAME session on the shared leader (history intact). The id is the ACP
-   * session id `createGrokSession` returned.
-   */
-  resume?: string;
-}
-
-/**
- * What `createGrokSession` returns. A Grok session (M6 A6c) is a native `grok`
- * TUI in a PTY (runtimeSessionId = the PTY id, sharing chunk/write/exit) attached
- * to a shared `grok agent leader`, PLUS an ACP control client in main
- * (`createAcpSession` over `grok agent --leader … stdio`) that observes AND
- * drives the SAME session — feeding the agentEvents/agentState channels and
- * injecting deterministically via `session/prompt`. `sessionId` is the ACP
- * session id (the spaghetti join), known at creation (unlike Codex's thread).
- */
-export interface GrokSessionInfo {
-  runtimeSessionId: string;
-  descriptor: SessionDescriptor;
-  sessionId: string;
-}
-
 /** Programmatic prompt injection request (DESIGN §17); text is pasted verbatim then submitted. */
 export interface SubmitPromptOptions {
   runtimeSessionId: string;
@@ -244,10 +172,7 @@ export interface SubmitPromptOptions {
 }
 
 /** Injection outcome (DESIGN §17): `uncertain` is first-class, never collapsed to success/failure. */
-export type PromptReceipt =
-  | { status: 'confirmed'; turnId?: string }
-  | { status: 'rejected'; reason: string }
-  | { status: 'uncertain'; reason: string };
+export type PromptReceipt = CorePromptReceipt;
 
 /**
  * The full renderer API surface exposed on `window.chopsticks` by the preload
@@ -263,14 +188,7 @@ export interface ChopsticksBridge {
   list(): Promise<SessionDescriptor[]>;
   onChunk(cb: (chunks: ChunkEvent[]) => void): () => void;
   onExit(cb: (exit: ExitEvent) => void): () => void;
-  // Claude session surface (driver lives in main; renderer sees snapshots only).
-  createClaudeSession(opts: CreateClaudeSessionOptions): Promise<CreateClaudeSessionResult>;
-  // Codex session surface: a native `codex --remote` terminal + a structured
-  // observer in main (shares the agentEvents/agentState channels above).
-  createCodexSession(opts: CreateCodexSessionOptions): Promise<CodexSessionInfo>;
-  // Grok session surface: a native `grok` TUI on a shared leader + an ACP control
-  // client in main (shares the agentEvents/agentState channels; deterministic inject).
-  createGrokSession(opts: CreateGrokSessionOptions): Promise<GrokSessionInfo>;
+  createAgentSession(opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult>;
   submitPrompt(opts: SubmitPromptOptions): Promise<PromptReceipt>;
   onAgentEvents(cb: (events: AgentEventMessage[]) => void): () => void;
   onAgentState(cb: (state: AgentStateMessage) => void): () => void;

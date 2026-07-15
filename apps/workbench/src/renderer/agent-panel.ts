@@ -1,8 +1,8 @@
 /**
  * Agent chat panel (DESIGN §12.2 renderer, §19 observation surface).
  *
- * A conversation view over the ACTIVE agent tab — Claude, Codex, or Grok,
- * uniformly. The renderer never holds a live `AgentSession`; it gets a serialized
+ * A conversation view over the active agent tab. The renderer never holds a
+ * live `AgentSession`; it gets a serialized
  * reducer snapshot + a bounded event tail from main and RECONSTRUCTS a chat
  * thread from them (turn.started → a user message, assistant.message → the
  * assistant reply accumulating in place, tool.* → inline tool chips). On top of
@@ -14,7 +14,7 @@
  * what the user is typing. The status pill's elapsed timer updates on its own
  * without touching the thread.
  *
- * The one agent-specific extra — a git workspace (Claude today) — is a
+ * The optional git workspace is a
  * collapsible disclosure that hides itself when there is no workspace data.
  */
 
@@ -69,20 +69,10 @@ interface ThreadItem {
  * several messages (intro → tool → answer), and each deserves its own bubble in
  * arrival order, exactly as the native TUI shows them.
  *
- * SINGLE SOURCE for message bubbles. A Claude message reaches us TWICE — from the
- * hook (`MessageDisplay`, streaming) and from the transcript observer
- * (authoritative text). Their `message_id` spaces do NOT align (hook display id
- * vs. the transcript's `msg_…` API id), so the two copies cannot be reconciled in
- * the renderer and rendering both is the duplication we kept seeing. Per the
- * design's own fork (HOOK-SURFACE-FINDINGS §7), we take ONE: the hook/structured
- * stream, which streams live and shares the id space Codex and ACP already use.
- * Transcript-sourced `assistant.message` stays authoritative for session STATE
- * but is excluded from the thread here. `turn.completed` only materializes a
- * bubble when the turn produced no assistant message at all.
- *
- * The collapse trap: ACP (Grok) may reuse a constant `messageId` ('acp-msg')
- * across turns, so a bare messageId key would fuse unrelated turns. We therefore
- * remember each message's turn and only reuse a bubble when the turns match.
+ * The runtime presents one canonical assistant-message stream; transcript
+ * enrichment and provider-specific duplicate suppression are handled before
+ * this boundary. A bare message id is still not globally unique, so each id is
+ * scoped to its turn before bubbles are reused.
  * Tools are tracked by call-id (so completion updates the right chip) and attach
  * to the message bubble that was open when they fired.
  */
@@ -96,7 +86,14 @@ export function buildThread(events: AgentEventEnvelope[]): ThreadItem[] {
     env.promptId ?? env.turnId ?? e.turnId;
 
   const newAssistant = (turn: string | undefined): ThreadItem => {
-    const a: ThreadItem = { kind: 'assistant', turnId: turn, text: '', authoritative: false, tools: [], streaming: true };
+    const a: ThreadItem = {
+      kind: 'assistant',
+      turnId: turn,
+      text: '',
+      authoritative: false,
+      tools: [],
+      streaming: true,
+    };
     items.push(a);
     lastAssistant = a;
     return a;
@@ -113,13 +110,17 @@ export function buildThread(events: AgentEventEnvelope[]): ThreadItem[] {
     switch (e.type) {
       case 'turn.started':
         if (typeof e.prompt === 'string' && e.prompt.trim()) {
-          items.push({ kind: 'user', turnId: turnKey, text: e.prompt, authoritative: true, tools: [], streaming: false });
+          items.push({
+            kind: 'user',
+            turnId: turnKey,
+            text: e.prompt,
+            authoritative: true,
+            tools: [],
+            streaming: false,
+          });
         }
         break;
       case 'assistant.message': {
-        // Transcript copy: authoritative for state, but a duplicate here — its
-        // id space can't be reconciled with the hook stream. Hook drives bubbles.
-        if (env.source === 'native-transcript') break;
         const messageId = typeof e.messageId === 'string' ? e.messageId : undefined;
         let a: ThreadItem | undefined;
         if (messageId) {
@@ -289,7 +290,7 @@ export class AgentPanel {
     // Pending-permission banner (the "needs attention" signal).
     this.permsBanner = el('div', 'perms-banner hidden');
 
-    // Workspace disclosure (Claude today) — collapsed, self-hiding.
+    // Workspace disclosure — collapsed and self-hiding.
     this.wsDisclosure = document.createElement('details');
     this.wsDisclosure.className = 'ws-disclosure hidden';
     this.wsSummary = document.createElement('summary');
@@ -463,7 +464,7 @@ export class AgentPanel {
 
     const files = final ? final.metadata.filesTouched : (diff?.filesTouched ?? []);
     this.wsSummary.replaceChildren(
-      el('span', 'ws-tag', info.isolation),
+      el('span', 'ws-tag', info.mode),
       el('span', 'ws-branch', info.branch ?? ''),
       el('span', 'ws-count', `${files.length} file${files.length === 1 ? '' : 's'}`),
     );

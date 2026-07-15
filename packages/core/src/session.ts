@@ -42,8 +42,8 @@ export type PromptReceipt =
  * and controlled. Process lifecycle (spawn/terminate) belongs to the host, not
  * this handle (ADR-007); `dispose()` tears down observation/control only.
  *
- * Adapters MAY extend this with native extras (e.g. Claude's `transcriptPath()`
- * / `pollTranscript()`), but everything shared across drivers lives here.
+ * Adapters MAY extend this with native extras, but applications should normally
+ * consume the provider-neutral AgentRuntime surface from chopsticks-runtime.
  */
 export interface AgentSession {
   /** Native/join id — the chopsticks ↔ spaghetti correlation key. */

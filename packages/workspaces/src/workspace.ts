@@ -1,39 +1,35 @@
 /**
- * Workspace isolation (DESIGN §20).
+ * Session workspaces behind one handle.
  *
- * Three providers behind one Workspace handle:
- * - shared:   the caller's directory as-is. destroy() is a NO-OP by contract —
- *             this provider never owns the directory and never deletes state.
- * - worktree: `git worktree add -b chopsticks/<id>` materialized OUTSIDE the
- *             repository (under workspacesRoot). The branch is the session's
- *             work product: destroy() removes the worktree but keeps the
- *             branch unless deleteBranch is explicit. A dirty worktree refuses
- *             destruction without { force: true } — silent loss is never the
- *             default (§20.3 spirit, and the global no-destroy rule).
- * - copy:     a recursive copy for non-git directories (or when git isolation
- *             is unwanted). destroy() removes the copy, guarded to paths this
- *             module materialized.
- *
- * The §20.3 policy — one writer per shared root — is a pure check the host
- * calls before creating a session (assertWorkspacePolicy).
+ * - direct:    use the caller's directory as-is; any number of agents may use it.
+ * - exclusive: use the caller's directory as-is; the runtime owns the cooperative
+ *              lease that prevents another direct/exclusive session there.
+ * - worktree:  materialize a Git worktree outside the repository. Clean
+ *              worktrees are removed on exit while their branch is retained;
+ *              dirty worktrees are retained and can be adopted on resume.
+ * - copy:      an internal/advanced provider for non-Git directory copies.
  */
 
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { filesFromPorcelain, git, headCommit, isGitRepo, parseShortstat, porcelainStatus } from './git.js';
 
-export type WorkspaceIsolation = 'shared' | 'worktree' | 'copy';
+export type WorkspaceMode = 'direct' | 'exclusive' | 'worktree' | 'copy';
 
 export interface WorkspaceRequest {
-  /** Repository root (shared/worktree) or source directory (copy). */
+  /** Working directory (direct/exclusive), repository (worktree), or source (copy). */
   path: string;
-  isolation: WorkspaceIsolation;
-  /** worktree: ref to branch from; default HEAD. */
+  mode: WorkspaceMode;
+  /** New worktree: ref to branch from; default HEAD. */
   baseRef?: string;
-  /** worktree: branch name; default chopsticks/<id>. */
+  /** New worktree: branch name; default chopsticks/<id>. */
   branchName?: string;
+  /** Resume a previously created worktree branch. */
+  resumeBranch?: string;
+  /** Adopt a retained worktree instead of materializing it again. */
+  resumeRoot?: string;
   /** Where worktrees/copies materialize; default ~/.chopsticks/workspaces. */
   workspacesRoot?: string;
 }
@@ -46,13 +42,13 @@ export interface WorkspaceDiff {
   porcelain: string;
 }
 
-/** DESIGN §20.4 — recorded per session for the operational record. */
 export interface WorkspaceSessionMetadata {
   root: string;
-  isolation: WorkspaceIsolation;
+  sourcePath: string;
+  mode: WorkspaceMode;
   branch?: string;
   initialCommit?: string;
-  /** Files already dirty at creation (shared roots) — subtract for attribution. */
+  /** Files already dirty at creation, excluded from best-effort attribution. */
   initialDirtyFiles: string[];
   finalCommit?: string;
   finalDiff: WorkspaceDiff;
@@ -63,7 +59,9 @@ export interface Workspace {
   readonly id: string;
   /** The session's cwd. */
   readonly root: string;
-  readonly isolation: WorkspaceIsolation;
+  /** Canonical identity used by the runtime's cooperative lease policy. */
+  readonly identity: string;
+  readonly mode: WorkspaceMode;
   readonly sourcePath: string;
   readonly branch?: string;
   readonly initialCommit?: string;
@@ -87,6 +85,30 @@ export class WorkspaceError extends Error {
 }
 
 const DEFAULT_WORKSPACES_ROOT = path.join(homedir(), '.chopsticks', 'workspaces');
+
+/**
+ * Canonical cooperative-lock identity. Paths inside the same checkout (and
+ * symlinks to it) collapse to that checkout's real Git top-level directory.
+ */
+export async function workspaceIdentity(source: string): Promise<string> {
+  let resolved: string;
+  try {
+    resolved = await realpath(source);
+  } catch (err) {
+    throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `workspace source does not exist: ${source}`, {
+      cause: err,
+    });
+  }
+
+  if (!(await isGitRepo(resolved))) return resolved;
+  try {
+    return await realpath(await git(resolved, 'rev-parse', '--show-toplevel'));
+  } catch (err) {
+    throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `could not resolve Git workspace root: ${source}`, {
+      cause: err,
+    });
+  }
+}
 
 async function gitDiff(root: string): Promise<WorkspaceDiff> {
   if (!(await isGitRepo(root))) {
@@ -112,9 +134,10 @@ export async function createWorkspace(request: WorkspaceRequest): Promise<Worksp
   const id = randomUUID().slice(0, 8);
   const workspacesRoot = request.workspacesRoot ?? DEFAULT_WORKSPACES_ROOT;
 
-  switch (request.isolation) {
-    case 'shared':
-      return createShared(id, request.path);
+  switch (request.mode) {
+    case 'direct':
+    case 'exclusive':
+      return createInPlace(id, request.path, request.mode);
     case 'worktree':
       return createWorktree(id, request, workspacesRoot);
     case 'copy':
@@ -125,20 +148,33 @@ export async function createWorkspace(request: WorkspaceRequest): Promise<Worksp
 function makeFinalize(workspace: Omit<Workspace, 'finalize' | 'destroy'>): () => Promise<WorkspaceSessionMetadata> {
   return async () => {
     const finalDiff = await workspace.diff();
+    const finalCommit = await headCommit(workspace.root);
+    let committedFiles: string[] = [];
+    if (workspace.initialCommit && finalCommit && workspace.initialCommit !== finalCommit) {
+      committedFiles = (await git(workspace.root, 'diff', '--name-only', workspace.initialCommit, finalCommit))
+        .split('\n')
+        .filter(Boolean);
+    }
+    const initiallyDirty = new Set(workspace.initialDirtyFiles);
+    const newlyDirty = finalDiff.filesTouched.filter((file) => !initiallyDirty.has(file));
+
     return {
       root: workspace.root,
-      isolation: workspace.isolation,
+      sourcePath: workspace.sourcePath,
+      mode: workspace.mode,
       branch: workspace.branch,
       initialCommit: workspace.initialCommit,
       initialDirtyFiles: [...workspace.initialDirtyFiles],
-      finalCommit: await headCommit(workspace.root),
+      finalCommit,
       finalDiff,
-      filesTouched: finalDiff.filesTouched,
+      filesTouched: [...new Set([...committedFiles, ...newlyDirty])].sort(),
     };
   };
 }
 
-async function createShared(id: string, root: string): Promise<Workspace> {
+async function createInPlace(id: string, requestedRoot: string, mode: 'direct' | 'exclusive'): Promise<Workspace> {
+  const root = await realpath(requestedRoot);
+  const identity = await workspaceIdentity(root);
   const inRepo = await isGitRepo(root);
   const initialCommit = inRepo ? await headCommit(root) : undefined;
   const initialDirtyFiles = inRepo ? filesFromPorcelain(await porcelainStatus(root)) : [];
@@ -146,7 +182,8 @@ async function createShared(id: string, root: string): Promise<Workspace> {
   const base = {
     id,
     root,
-    isolation: 'shared' as const,
+    identity,
+    mode,
     sourcePath: root,
     branch: undefined,
     initialCommit,
@@ -156,39 +193,73 @@ async function createShared(id: string, root: string): Promise<Workspace> {
   return {
     ...base,
     finalize: makeFinalize(base),
-    // Contract, not laziness: shared roots belong to the user.
+    // In-place roots belong to the user and are never removed by this module.
     destroy: async () => undefined,
   };
 }
 
-async function createWorktree(id: string, request: WorkspaceRequest, workspacesRoot: string): Promise<Workspace> {
-  if (!(await isGitRepo(request.path))) {
+async function assertRetainedWorktree(source: string, root: string, branch: string): Promise<void> {
+  const canonicalRoot = await realpath(root);
+  const entries = (await git(source, 'worktree', 'list', '--porcelain')).split('\n\n');
+  const expectedBranch = `refs/heads/${branch}`;
+  const match = entries.find((entry) => {
+    const lines = entry.split('\n');
+    return lines.includes(`worktree ${canonicalRoot}`) && lines.includes(`branch ${expectedBranch}`);
+  });
+  if (!match) {
     throw new WorkspaceError(
       'WORKSPACE_CREATE_FAILED',
-      `worktree isolation requires a git repository: ${request.path}`,
+      `retained worktree is not registered for branch ${branch}: ${canonicalRoot}`,
     );
   }
-  const branch = request.branchName ?? `chopsticks/${id}`;
-  const base = request.baseRef ?? 'HEAD';
-  const root = path.join(workspacesRoot, id);
-  await mkdir(workspacesRoot, { recursive: true });
+}
 
-  try {
-    await git(request.path, 'worktree', 'add', '-b', branch, root, base);
-  } catch (err) {
-    throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `git worktree add failed: ${(err as Error).message}`, {
-      cause: err,
-    });
+async function createWorktree(id: string, request: WorkspaceRequest, workspacesRoot: string): Promise<Workspace> {
+  if (!(await isGitRepo(request.path))) {
+    throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `worktree mode requires a git repository: ${request.path}`);
+  }
+  if (request.resumeRoot && !request.resumeBranch) {
+    throw new WorkspaceError('WORKSPACE_CREATE_FAILED', 'resumeRoot requires resumeBranch');
   }
 
+  const sourcePath = await workspaceIdentity(request.path);
+  const branch = request.resumeBranch ?? request.branchName ?? `chopsticks/${id}`;
+  let root = path.join(workspacesRoot, id);
+  if (request.resumeRoot) {
+    try {
+      root = await realpath(request.resumeRoot);
+    } catch (err) {
+      throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `retained worktree does not exist: ${request.resumeRoot}`, {
+        cause: err,
+      });
+    }
+  }
+
+  if (request.resumeRoot) {
+    await assertRetainedWorktree(sourcePath, root, branch);
+  } else {
+    await mkdir(workspacesRoot, { recursive: true });
+    try {
+      if (request.resumeBranch) await git(sourcePath, 'worktree', 'add', root, branch);
+      else await git(sourcePath, 'worktree', 'add', '-b', branch, root, request.baseRef ?? 'HEAD');
+    } catch (err) {
+      throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `git worktree add failed: ${(err as Error).message}`, {
+        cause: err,
+      });
+    }
+    root = await realpath(root);
+  }
+
+  const initialDirtyFiles = filesFromPorcelain(await porcelainStatus(root));
   const workspaceBase = {
     id,
     root,
-    isolation: 'worktree' as const,
-    sourcePath: request.path,
+    identity: await workspaceIdentity(root),
+    mode: 'worktree' as const,
+    sourcePath,
     branch,
     initialCommit: await headCommit(root),
-    initialDirtyFiles: [] as string[],
+    initialDirtyFiles,
     diff: () => gitDiff(root),
   };
   return {
@@ -206,18 +277,19 @@ async function createWorktree(id: string, request: WorkspaceRequest, workspacesR
       }
       const args = ['worktree', 'remove', root];
       if (options?.force) args.push('--force');
-      await git(request.path, ...args);
+      await git(sourcePath, ...args);
       // The branch is the work product; deletion is an explicit choice.
-      if (options?.deleteBranch) await git(request.path, 'branch', '-D', branch);
+      if (options?.deleteBranch) await git(sourcePath, 'branch', '-D', branch);
     },
   };
 }
 
 async function createCopy(id: string, source: string, workspacesRoot: string): Promise<Workspace> {
+  const sourcePath = await realpath(source);
   const root = path.join(workspacesRoot, id);
   await mkdir(workspacesRoot, { recursive: true });
   try {
-    await cp(source, root, { recursive: true, errorOnExist: true, force: false });
+    await cp(sourcePath, root, { recursive: true, errorOnExist: true, force: false });
   } catch (err) {
     throw new WorkspaceError('WORKSPACE_CREATE_FAILED', `copy failed: ${(err as Error).message}`, { cause: err });
   }
@@ -225,8 +297,9 @@ async function createCopy(id: string, source: string, workspacesRoot: string): P
   const base = {
     id,
     root,
-    isolation: 'copy' as const,
-    sourcePath: source,
+    identity: await realpath(root),
+    mode: 'copy' as const,
+    sourcePath,
     branch: undefined,
     initialCommit: await headCommit(root),
     initialDirtyFiles: [] as string[],
@@ -243,20 +316,4 @@ async function createCopy(id: string, source: string, workspacesRoot: string): P
       await rm(root, { recursive: true, force: true });
     },
   };
-}
-
-/**
- * DESIGN §20.3 — one writer per shared root: a second concurrent session on
- * the same repository must take worktree or copy isolation.
- */
-export function assertWorkspacePolicy(active: readonly Workspace[], request: WorkspaceRequest): void {
-  if (request.isolation !== 'shared') return;
-  const requested = path.resolve(request.path);
-  const conflict = active.find((w) => w.isolation === 'shared' && path.resolve(w.sourcePath) === requested);
-  if (conflict) {
-    throw new WorkspaceError(
-      'WORKSPACE_CONFLICT',
-      `a shared workspace (${conflict.id}) is already active on ${requested}; use worktree or copy isolation`,
-    );
-  }
 }
