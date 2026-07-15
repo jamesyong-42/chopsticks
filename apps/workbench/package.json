@@ -8,9 +8,10 @@
   "author": "James Yong",
   "main": "./dist/main.cjs",
   "scripts": {
+    "prebundle": "pnpm -C ../../../avocado/packages/restty exec bun run build:lib && pnpm -C ../../../avocado/packages/sdk build",
     "bundle": "node build.mjs",
-    "start": "node build.mjs && electron .",
-    "smoke": "node build.mjs && electron . --smoke",
+    "start": "pnpm bundle && electron .",
+    "smoke": "pnpm bundle && electron . --smoke",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -27,7 +28,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "restty": "^0.2.0",
+    "restty": "file:../../../avocado/packages/restty",
     "xterm": "^5.3.0"
   },
   "devDependencies": {

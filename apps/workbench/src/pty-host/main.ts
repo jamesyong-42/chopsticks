@@ -58,7 +58,11 @@ const sessions = new Map<string, HostSession>();
 function resolveSpawn(config: SpawnConfig): { command: string; args: string[] } {
   switch (config.command) {
     case 'shell':
-      return { command: process.env.SHELL ?? '/bin/zsh', args: [] };
+      // Login shell on macOS (Ghostty / Terminal.app); keep args empty elsewhere.
+      return {
+        command: process.env.SHELL ?? '/bin/zsh',
+        args: process.platform === 'darwin' ? ['-l'] : [],
+      };
     case 'fake-agent':
       return { command: process.execPath, args: [fakeAgentBin] };
     case 'node':

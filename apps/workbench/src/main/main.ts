@@ -21,7 +21,14 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  Menu,
+  type MenuItemConstructorOptions,
+} from 'electron';
 import {
   createNamespacedId,
   createProxyPTYSession,
@@ -686,6 +693,16 @@ function registerIpc(): void {
     return { snapshotBase64: buffer ? buffer.toString('base64') : '' };
   });
   ipcMain.handle('chopsticks:list', () => manager.getAllSessionInfos().map(infoToDescriptor));
+
+  // restty copy-on-select + OSC 52 (navigator.clipboard is flaky in Electron).
+  ipcMain.handle('chopsticks:clipboardWrite', (_e, text: string) => {
+    clipboard.writeText(typeof text === 'string' ? text : String(text ?? ''));
+    return { success: true as const };
+  });
+  ipcMain.handle('chopsticks:clipboardRead', () => ({
+    success: true as const,
+    text: clipboard.readText(),
+  }));
 }
 
 // --- window ---------------------------------------------------------------
@@ -720,6 +737,15 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+
+  // OS window focus → restty hollow cursor (document.hasFocus is unreliable).
+  const sendWindowFocus = (focused: boolean): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+    mainWindow.webContents.send('chopsticks:windowFocus', focused);
+  };
+  mainWindow.on('focus', () => sendWindowFocus(true));
+  mainWindow.on('blur', () => sendWindowFocus(false));
+
   mainWindow.on('closed', () => {
     mainWindow = undefined;
   });

@@ -172,6 +172,8 @@ function PaneView({
         sessionId={pane.sessionId}
         terminalId={pane.terminalId}
         engine="restty"
+        // Each split owns its own PTY — always active for resize (ghostty demo).
+        // Hollow cursor on unfocused splits is driven by focus()/blur() in App.
         isActive
         autoResize
         className="term-surface"
@@ -800,11 +802,26 @@ export function App(): JSX.Element {
     };
   }, [stopDiffPoll]);
 
+  // Bridge BrowserWindow focus → restty hollow cursor (restty:window-focus).
+  useEffect(() => {
+    return window.chopsticksWindow?.onFocusChange((focused) => {
+      window.dispatchEvent(
+        new CustomEvent('restty:window-focus', { detail: { focused } }),
+      );
+    });
+  }, []);
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const focusedPaneId = activeTab?.focusedPaneId ?? null;
+  // Focus the active split and blur the rest so unfocused panes show a hollow
+  // cursor (Ghostty / avocado demo). Each pane owns its own PTY so isActive
+  // stays true for resize; cursor state is driven here via focus/blur.
   useEffect(() => {
     if (!focusedPaneId) return;
-    paneActionsRef.current.get(focusedPaneId)?.focus();
+    for (const [paneId, actions] of paneActionsRef.current) {
+      if (paneId === focusedPaneId) actions.focus();
+      else actions.blur();
+    }
   }, [activeTabId, focusedPaneId]);
 
   useEffect(() => {

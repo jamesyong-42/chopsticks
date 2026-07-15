@@ -76,3 +76,37 @@ const bridge: ChopsticksBridge = {
 };
 
 contextBridge.exposeInMainWorld('chopsticks', bridge);
+
+/** BrowserWindow focus/blur from main — restty hollow cursor on OS unfocus. */
+contextBridge.exposeInMainWorld('chopsticksWindow', {
+  onFocusChange: (cb: (focused: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, focused: boolean): void => cb(focused);
+    ipcRenderer.on('chopsticks:windowFocus', listener);
+    return () => ipcRenderer.removeListener('chopsticks:windowFocus', listener);
+  },
+});
+
+/** Host clipboard for restty (copy-on-select + OSC 52). */
+const hostClipboard = {
+  writeText: async (text: string): Promise<void> => {
+    const result = (await ipcRenderer.invoke('chopsticks:clipboardWrite', text)) as {
+      success: boolean;
+      error?: string;
+    };
+    if (!result?.success) {
+      throw new Error(result?.error ?? 'clipboard write failed');
+    }
+  },
+  readText: async (): Promise<string | null> => {
+    const result = (await ipcRenderer.invoke('chopsticks:clipboardRead')) as {
+      success: boolean;
+      text?: string;
+      error?: string;
+    };
+    if (!result?.success) return null;
+    return result.text ?? '';
+  },
+};
+// restty looks for window.ghosttyClipboard / window.__resttyClipboard
+contextBridge.exposeInMainWorld('ghosttyClipboard', hostClipboard);
+contextBridge.exposeInMainWorld('__resttyClipboard', hostClipboard);
