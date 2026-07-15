@@ -1,15 +1,23 @@
 /**
- * Claude activity panel (DESIGN §12.2 renderer, §19 observation surface).
+ * Agent activity panel (DESIGN §12.2 renderer, §19 observation surface).
  *
- * A single right-hand panel that renders the ACTIVE Claude tab from the latest
- * serialized reducer snapshot the main process pushes. The renderer never holds
- * a live ClaudeSession — only these snapshots and a bounded event tail — so this
- * component is pure presentation plus one control affordance: the prompt-
- * injection box, whose Send routes back through `submitPrompt`.
+ * ONE right-hand panel that renders the ACTIVE agent tab — Claude, Codex, or
+ * Grok, uniformly — from the latest serialized reducer snapshot main pushes. The
+ * renderer never holds a live `AgentSession`; only these snapshots + a bounded
+ * event tail. So this is pure presentation over the AGENT-AGNOSTIC common ground:
  *
- * The info sections re-render on every state push; the inject box is rebuilt
- * only on a session switch, so a state update never wipes what the user is
- * typing or the last receipt.
+ *   observe → lifecycle badge · active turn · in-flight tools · pending
+ *             permissions · last assistant message · event tail
+ *   control → the prompt-injection box (Send → `submitPrompt`) + Resume
+ *
+ * Every one of those is driven by core `AgentSession` snapshot types, so the
+ * panel is identical for all agents. The ONE agent-specific extra is the
+ * workspace section (a git worktree/diff), shown only for agents that supply it
+ * (Claude today); it hides itself when the data is absent.
+ *
+ * The info sections re-render on every state push; the inject box is rebuilt only
+ * on a session switch, so a state update never wipes what the user is typing or
+ * the last receipt.
  */
 
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
@@ -109,16 +117,17 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-export class ClaudePanel {
+export class AgentPanel {
   private shownSessionId: string | undefined;
   private assistantExpanded = false;
 
   // Fixed skeleton nodes, built once, updated in place.
+  private readonly kindBadge: HTMLSpanElement;
   private readonly badge: HTMLSpanElement;
   private readonly obs: HTMLSpanElement;
   private readonly resumeBtn: HTMLButtonElement;
   private readonly turnLine: HTMLDivElement;
-  // Workspace section.
+  // Workspace section (agent-specific extra; Claude today).
   private readonly wsSection: HTMLElement;
   private readonly wsBadge: HTMLSpanElement;
   private readonly wsBranch: HTMLSpanElement;
@@ -149,22 +158,25 @@ export class ClaudePanel {
     root.classList.add('activity');
 
     const header = el('div', 'panel-header');
+    // Which agent this panel is showing (claude / codex / grok); colored via CSS.
+    this.kindBadge = el('span', 'kind-badge');
     this.badge = el('span', 'badge');
     this.obs = el('span', 'obs');
-    // Resume: shown only on an exited Claude tab. Click reconstructs the spawn
-    // (new tab, same Claude session + transcript) via the workbench's onResume.
+    // Resume: shown only on an exited tab with a resumable id. Click reconstructs
+    // the spawn (a new tab reopening the same agent session) via onResume.
     this.resumeBtn = el('button', 'resume-btn', '⟲ Resume');
     this.resumeBtn.type = 'button';
     this.resumeBtn.classList.add('hidden');
     this.resumeBtn.addEventListener('click', () => {
       if (this.shownSessionId) this.onResume(this.shownSessionId);
     });
-    header.append(this.badge, this.obs, this.resumeBtn);
+    header.append(this.kindBadge, this.badge, this.obs, this.resumeBtn);
 
     this.turnLine = el('div', 'panel-turn');
 
     // Workspace: isolation badge + branch, root path, commit, retained notice,
-    // and the files-touched list. Hidden until a Claude tab supplies its data.
+    // and the files-touched list. Hidden until an agent supplies its data (only
+    // agents with a git workspace — Claude — do; Codex/Grok pass none).
     this.wsSection = el('section', 'panel-section workspace-section');
     const wsHeader = el('div', 'ws-header');
     wsHeader.append(el('h4', undefined, 'Workspace'));
@@ -177,7 +189,15 @@ export class ClaudePanel {
     this.wsRetained = el('div', 'ws-retained');
     this.wsFilesHeading = el('h5', 'ws-files-heading', 'Files touched');
     this.wsFiles = el('ul', 'ws-files');
-    this.wsSection.append(wsHeader, this.wsRoot, this.wsCommit, this.wsNote, this.wsRetained, this.wsFilesHeading, this.wsFiles);
+    this.wsSection.append(
+      wsHeader,
+      this.wsRoot,
+      this.wsCommit,
+      this.wsNote,
+      this.wsRetained,
+      this.wsFilesHeading,
+      this.wsFiles,
+    );
 
     const toolsSection = el('section', 'panel-section');
     toolsSection.append(el('h4', undefined, 'In-flight tools'));
@@ -238,6 +258,7 @@ export class ClaudePanel {
   /** Show/refresh the panel for one session. A different id resets the inject box. */
   render(
     runtimeSessionId: string,
+    agentKind: string,
     msg: AgentStateMessage | undefined,
     events: AgentEventEnvelope[],
     workspace: WorkspacePanelData | undefined,
@@ -250,8 +271,11 @@ export class ClaudePanel {
       this.resetInject();
     }
     this.root.classList.remove('hidden');
-    // Resume is offered on an exited tab that has a resumable id (Claude
-    // --session-id, or a materialized Codex thread); a live tab hides it.
+    // Identity: which agent this is (colored via CSS data-kind).
+    this.kindBadge.textContent = agentKind;
+    this.kindBadge.dataset.kind = agentKind;
+    // Resume is offered on an exited tab that has a resumable id; a live tab
+    // hides it. Applies to every agent (Claude --session-id, Codex thread, Grok id).
     this.resumeBtn.classList.toggle('hidden', !(exited && canResume));
     this.renderState(msg);
     this.renderWorkspace(workspace);
@@ -309,7 +333,7 @@ export class ClaudePanel {
     }
   }
 
-  /** Hide the panel (active tab is not a Claude session). */
+  /** Hide the panel (the active tab is not an agent session). */
   hide(): void {
     this.shownSessionId = undefined;
     this.root.classList.add('hidden');

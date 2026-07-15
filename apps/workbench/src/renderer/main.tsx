@@ -15,20 +15,9 @@
  *   mod+1..8, mod+9  select tab N / last tab
  */
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type JSX,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  AvocadoProvider,
-  TerminalSurface,
-  type TerminalCoreActions,
-} from '@vibecook/avocado-sdk/react';
+import { AvocadoProvider, TerminalSurface, type TerminalCoreActions } from '@vibecook/avocado-sdk/react';
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
 import type {
   AgentEventMessage,
@@ -37,7 +26,7 @@ import type {
   ExitEvent,
   WorkspaceFinalEvent,
 } from '../protocol.js';
-import { ClaudePanel, type WorkspacePanelData } from './claude-panel.js';
+import { AgentPanel, type WorkspacePanelData } from './agent-panel.js';
 import { createChopsticksBackend, type ChopsticksTerminalBackend } from './backend.js';
 import {
   leaf,
@@ -195,9 +184,7 @@ export function App(): JSX.Element {
 
   const [claudeState, setClaudeState] = useState(() => new Map<string, AgentStateMessage>());
   const [claudeEvents, setClaudeEvents] = useState(() => new Map<string, AgentEventEnvelope[]>());
-  const [claudeWorkspace, setClaudeWorkspace] = useState(
-    () => new Map<string, WorkspacePanelData>(),
-  );
+  const [claudeWorkspace, setClaudeWorkspace] = useState(() => new Map<string, WorkspacePanelData>());
   const [claudeSessionId, setClaudeSessionId] = useState(() => new Map<string, string>());
   const [codexThreadId, setCodexThreadId] = useState(() => new Map<string, string>());
   const [grokSessionId, setGrokSessionId] = useState(() => new Map<string, string>());
@@ -209,7 +196,7 @@ export function App(): JSX.Element {
   activeTabIdRef.current = activeTabId;
 
   const activityRef = useRef<HTMLElement | null>(null);
-  const panelRef = useRef<ClaudePanel | null>(null);
+  const panelRef = useRef<AgentPanel | null>(null);
   const diffPollers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const injectedReady = useRef(new Set<string>());
 
@@ -355,12 +342,8 @@ export function App(): JSX.Element {
       const panes = { ...tab.panes };
       delete panes[paneId];
       const focusedPaneId =
-        tab.focusedPaneId === paneId
-          ? (panesOf(nextTree)[0] ?? tab.focusedPaneId)
-          : tab.focusedPaneId;
-      setTabs(
-        prev.map((t) => (t.id === tab.id ? { ...t, tree: nextTree, panes, focusedPaneId } : t)),
-      );
+        tab.focusedPaneId === paneId ? (panesOf(nextTree)[0] ?? tab.focusedPaneId) : tab.focusedPaneId;
+      setTabs(prev.map((t) => (t.id === tab.id ? { ...t, tree: nextTree, panes, focusedPaneId } : t)));
     },
     [stopDiffPoll],
   );
@@ -393,9 +376,7 @@ export function App(): JSX.Element {
 
   const focusPane = useCallback((tabId: string, paneId: string) => {
     setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId && t.focusedPaneId !== paneId ? { ...t, focusedPaneId: paneId } : t,
-      ),
+      prev.map((t) => (t.id === tabId && t.focusedPaneId !== paneId ? { ...t, focusedPaneId: paneId } : t)),
     );
   }, []);
 
@@ -425,9 +406,7 @@ export function App(): JSX.Element {
   }, []);
 
   const changeRatio = useCallback((tabId: string, splitId: string, ratio: number) => {
-    setTabs((prev) =>
-      prev.map((t) => (t.id === tabId ? { ...t, tree: setSplitRatio(t.tree, splitId, ratio) } : t)),
-    );
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, tree: setSplitRatio(t.tree, splitId, ratio) } : t)));
   }, []);
 
   // ─── Agent spawn ──────────────────────────────────────────────────────
@@ -466,11 +445,7 @@ export function App(): JSX.Element {
   );
 
   const newClaude = useCallback(
-    () =>
-      void startClaude(
-        { workspace: { isolation } },
-        isolation === 'worktree' ? 'claude ⑂' : 'claude',
-      ),
+    () => void startClaude({ workspace: { isolation } }, isolation === 'worktree' ? 'claude ⑂' : 'claude'),
     [isolation, startClaude],
   );
 
@@ -617,7 +592,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     const el = activityRef.current;
     if (!el || panelRef.current) return;
-    panelRef.current = new ClaudePanel(
+    panelRef.current = new AgentPanel(
       el,
       (runtimeSessionId, text) => chopsticks.submitPrompt({ runtimeSessionId, text }),
       (runtimeSessionId) => void resumeAgentRef.current(runtimeSessionId),
@@ -646,6 +621,7 @@ export function App(): JSX.Element {
       // panel uses exited for Resume affordance; we pass false until exit wire.
       panel.render(
         pane.sessionId,
+        pane.agentKind,
         claudeState.get(pane.sessionId),
         claudeEvents.get(pane.sessionId) ?? [],
         workspace,
@@ -655,15 +631,7 @@ export function App(): JSX.Element {
     } else {
       panel.hide();
     }
-  }, [
-    focusedSession,
-    claudeState,
-    claudeEvents,
-    claudeWorkspace,
-    claudeSessionId,
-    codexThreadId,
-    grokSessionId,
-  ]);
+  }, [focusedSession, claudeState, claudeEvents, claudeWorkspace, claudeSessionId, codexThreadId, grokSessionId]);
 
   // ─── Lifecycle: first tab, exit, IPC, restore, keybindings ────────────
 
@@ -805,9 +773,7 @@ export function App(): JSX.Element {
   // Bridge BrowserWindow focus → restty hollow cursor (restty:window-focus).
   useEffect(() => {
     return window.chopsticksWindow?.onFocusChange((focused) => {
-      window.dispatchEvent(
-        new CustomEvent('restty:window-focus', { detail: { focused } }),
-      );
+      window.dispatchEvent(new CustomEvent('restty:window-focus', { detail: { focused } }));
     });
   }, []);
 
@@ -898,9 +864,7 @@ export function App(): JSX.Element {
               <select
                 value={isolation}
                 title="Claude workspace isolation"
-                onChange={(e) =>
-                  setIsolation(e.target.value === 'worktree' ? 'worktree' : 'shared')
-                }
+                onChange={(e) => setIsolation(e.target.value === 'worktree' ? 'worktree' : 'shared')}
               >
                 <option value="shared">shared</option>
                 <option value="worktree">worktree</option>
@@ -920,10 +884,7 @@ export function App(): JSX.Element {
         <div className="work-body">
           <div className="surface-area">
             {tabs.map((tab) => (
-              <div
-                key={tab.id}
-                className={`tab-content${tab.id === activeTabId ? '' : ' hidden'}`}
-              >
+              <div key={tab.id} className={`tab-content${tab.id === activeTabId ? '' : ' hidden'}`}>
                 <SplitView
                   tree={tab.tree}
                   renderPane={(paneId) => renderPane(tab, paneId)}
