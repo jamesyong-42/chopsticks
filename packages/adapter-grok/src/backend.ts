@@ -1,27 +1,19 @@
 /**
- * createGrokBackend — the full Grok native-TUI recipe (leader + TUI + ACP
- * control) as one `AgentSession` per tab, lifted out of the app (M6 A6c).
+ * Grok's native-TUI recipe (leader + TUI + ACP control) as one `AgentSession`.
  *
- * Grok's native-TUI + leader coexistence is three things the adapter now owns:
- *   1. a shared `grok agent leader` (spawned once, lazily; the backend owns it),
- *   2. a native `grok --leader` TUI spawned through the host terminal capability
- *      (the tab), which OWNS session creation (`--session-id <uuid>` for a new
- *      tab so the welcome shows and `session_start` fires once; `--resume <id>`
- *      to reopen). `--leader` is REQUIRED so the TUI joins OUR leader,
- *   3. an ACP control client that ATTACHES to that same session on the leader
- *      (observe + deterministic `session/prompt` inject), retried while the TUI
- *      registers it, and wired in asynchronously so it never blocks the terminal.
- *
- * The app used to manage the leader, spawn the TUI, and run the attach loop
- * itself; now it holds ONE backend and calls `createSession` per tab. The leader
- * lives until `backend.dispose()` (host shutdown).
+ * Grok-specific behavior contained here:
+ *   1. a shared `grok agent leader`, spawned once and owned by the backend;
+ *   2. a native `grok --leader` TUI spawned through the host terminal;
+ *   3. a generic ACP client attached to the leader session, with Grok-specific
+ *      command arguments and retry behavior while the TUI registers.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createAcpSession, createStdioAcpConnector } from '@vibecook/chopsticks-adapter-acp';
 import {
   createInitialSessionState,
   type AgentEventEnvelope,
@@ -32,7 +24,6 @@ import {
   type PromptSubmission,
   type SessionRuntimeState,
 } from '@vibecook/chopsticks-core';
-import { createAcpSession } from './driver.js';
 
 export interface CreateGrokBackendOptions {
   /** Grok executable (default `grok`). */
@@ -48,8 +39,7 @@ export interface GrokBackend {
   dispose(): void;
 }
 
-/** Attach an ACP control client to an EXISTING leader session, retrying while
- *  the TUI is still registering it (loadSession 404s until then). */
+/** Attach ACP control to an existing Grok leader session, retrying while the TUI registers it. */
 async function attachControl(
   executable: string,
   cwd: string,
@@ -60,30 +50,30 @@ async function attachControl(
   let lastErr: unknown;
   for (let i = 0; i < 15; i++) {
     try {
-      return await createAcpSession({ cwd, executable, args, resume: sessionId });
+      return await createAcpSession({
+        cwd,
+        connector: createStdioAcpConnector({ executable, args, cwd }),
+        resume: sessionId,
+      });
     } catch (err) {
-      lastErr = err; // a failed loadSession closes its own transport (driver)
-      await new Promise((r) => setTimeout(r, 400));
+      lastErr = err;
+      await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('grok ACP control attach failed');
 }
 
 /**
- * The pending-control session wrapper (extracted for testing). The native TUI is
- * up (id + terminal) but the ACP control client attaches asynchronously via
- * `attach()`; until it lands the session is usable but "starting":
- * - `onEvent` listeners buffer and are forwarded once control attaches,
- * - `submitPrompt` awaits the attach then delegates (rejects if it never lands),
- * - `state()` reports the initial reducer state until control's is available,
- * - `dispose()` before attach cancels the eventual control client.
+ * A Grok TUI session whose ACP control client attaches asynchronously. The TUI
+ * is usable immediately; observation and prompt injection bind once attach
+ * succeeds.
  */
 export function createPendingControlSession(
   sessionId: string,
   runtimeSessionId: string,
   attach: () => Promise<AgentSession>,
 ): AgentSession {
-  const listeners = new Set<(e: AgentEventEnvelope) => void>();
+  const listeners = new Set<(event: AgentEventEnvelope) => void>();
   let control: AgentSession | undefined;
   let disposed = false;
   const observation: ObservationLevel = 'structured';
@@ -95,9 +85,9 @@ export function createPendingControlSession(
     }
     control = acp;
     acp.onEvent((envelope) => {
-      for (const l of listeners) {
+      for (const listener of listeners) {
         try {
-          l(envelope);
+          listener(envelope);
         } catch {
           /* listener faults stay out of the pipeline */
         }
@@ -105,7 +95,7 @@ export function createPendingControlSession(
     });
     return acp;
   });
-  controlReady.catch(() => undefined); // unhandled-rejection guard; surfaced via submitPrompt
+  controlReady.catch(() => undefined);
 
   return {
     sessionId,
@@ -117,14 +107,12 @@ export function createPendingControlSession(
       return () => listeners.delete(listener);
     },
     async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
-      // `.catch` here (not just the guard above): if the attach REJECTED,
-      // awaiting the raw promise would throw — we want a `rejected` receipt.
       const acp = control ?? (await controlReady.catch(() => undefined));
       if (!acp) return { status: 'rejected', reason: 'grok control client not attached' };
       return acp.submitPrompt(submission);
     },
     notifyUserInput() {
-      /* the user drives the native TUI directly; nothing to arbitrate here */
+      /* the user drives the native TUI directly */
     },
     async dispose() {
       if (disposed) return;
@@ -134,9 +122,9 @@ export function createPendingControlSession(
   };
 }
 
-export function createGrokBackend(opts: CreateGrokBackendOptions): GrokBackend {
-  const executable = opts.executable ?? 'grok';
-  const host = opts.host;
+export function createGrokBackend(options: CreateGrokBackendOptions): GrokBackend {
+  const executable = options.executable ?? 'grok';
+  const host = options.host;
   let leader: { socketPath: string; child: ChildProcess } | undefined;
 
   async function ensureLeader(): Promise<string> {
@@ -144,14 +132,12 @@ export function createGrokBackend(opts: CreateGrokBackendOptions): GrokBackend {
     // macOS /tmp is a symlink the agent's socket bind rejects — use the real tmp.
     const dir = mkdtempSync(join(realpathSync(tmpdir()), 'chopsticks-grok-'));
     const socketPath = join(dir, 'leader.sock');
-    // `--relay-on-demand`: interactive client — defer the grok.com relay (avoid a
-    // startup round-trip and remote-prompt pulls).
     const child = spawn(
       executable,
       ['agent', 'leader', '--no-exit-on-disconnect', '--relay-on-demand', '--leader-socket', socketPath],
       { stdio: 'ignore' },
     );
-    for (let i = 0; i < 80 && !existsSync(socketPath); i++) await new Promise((r) => setTimeout(r, 250));
+    for (let i = 0; i < 80 && !existsSync(socketPath); i++) await new Promise((resolve) => setTimeout(resolve, 250));
     if (!existsSync(socketPath)) {
       try {
         child.kill('SIGTERM');
@@ -167,19 +153,12 @@ export function createGrokBackend(opts: CreateGrokBackendOptions): GrokBackend {
   return {
     async createSession({ cwd, resume }): Promise<AgentSession> {
       const socketPath = await ensureLeader();
-      // We dictate the id to BOTH clients. A fresh tab → `--session-id` (a NEW
-      // conversation → welcome shows); resume → `--resume`. `--leader` is required
-      // so the TUI joins our leader and shares the live session with the control
-      // client (otherwise the TUI runs standalone and injection wouldn't reach it).
       const sessionId = resume ?? randomUUID();
       const tuiArgs = resume
         ? ['--leader', '--leader-socket', socketPath, '--resume', sessionId]
         : ['--leader', '--leader-socket', socketPath, '--session-id', sessionId];
       const { runtimeSessionId } = await host.spawnTerminal({ command: executable, args: tuiArgs, cwd });
 
-      // The control client attaches asynchronously so the terminal is never
-      // blocked on it. The returned session is usable immediately (id + terminal),
-      // buffers onEvent listeners, and binds them once control lands.
       return createPendingControlSession(sessionId, runtimeSessionId, () =>
         attachControl(executable, cwd, socketPath, sessionId),
       );

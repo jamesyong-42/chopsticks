@@ -15,16 +15,14 @@
  * normalizer only translates the streamed `session/update`s that occur DURING a
  * turn. It never emits turn events.
  *
- * Mapping (grounded on the A1 live spike against `grok agent stdio`; the pong
- * turn surfaced user_message_chunk / agent_thought_chunk / agent_message_chunk /
- * available_commands_update — tool_call shapes are mapped from the authoritative
- * generated schema and pinned by a live tool-turn test in A3/A4):
+ * Mapping (grounded in the ACP schema and integration coverage):
  * - `agent_message_chunk`  → assistant.message, deltas accumulated by messageId
  *                            (`final:false`; the driver seals lastAssistantMessage
  *                            on turn.completed since ACP has no per-message final).
  * - `user_message_chunk`   → dropped: it's the echo of the prompt the driver just
  *                            sent, already carried by the synthesized turn.started.
- * - `agent_thought_chunk`  → adapter.native-event (no first-class reasoning event).
+ * - `agent_thought_chunk`  → presence-only reasoning.started/progress; its raw
+ *                            content remains on the envelope, never the core event.
  * - `tool_call`            → tool.started (+ terminal event if it arrives already
  *                            completed/failed).
  * - `tool_call_update`     → tool.completed / tool.failed on terminal status;
@@ -38,7 +36,7 @@
  * session.
  */
 
-import type { AgentEvent } from '@vibecook/chopsticks-core';
+import type { AgentEvent, ToolActivityKind, ToolPresentation } from '@vibecook/chopsticks-core';
 import type { ContentBlock, SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk';
 
 export interface NormalizedUpdate {
@@ -51,9 +49,41 @@ function contentText(content: ContentBlock | undefined): string {
   return '';
 }
 
+function detailOf(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value === undefined) return undefined;
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 240 ? `${text.slice(0, 237)}…` : text;
+  } catch {
+    return undefined;
+  }
+}
+
+function toolPresentation(kind: string | undefined, title: string | undefined, input: unknown): ToolPresentation {
+  const normalized = (kind ?? title ?? '').toLowerCase();
+  let activity: ToolActivityKind = 'other';
+  let fallback = 'Using tool';
+  if (normalized === 'execute') {
+    activity = 'command';
+    fallback = 'Running command';
+  } else if (normalized === 'read') {
+    activity = 'file-read';
+    fallback = 'Reading files';
+  } else if (['edit', 'delete', 'move'].includes(normalized)) {
+    activity = 'file-edit';
+    fallback = 'Editing files';
+  } else if (['fetch', 'search'].includes(normalized)) {
+    activity = 'web-search';
+    fallback = normalized === 'search' ? 'Searching the web' : 'Fetching from the web';
+  }
+  return { kind: activity, title: title || fallback, detail: detailOf(input) };
+}
+
 export class AcpNotificationNormalizer {
   /** Accumulated assistant text keyed by ACP messageId (deltas are additive). */
   private messageBuffers = new Map<string, string>();
+  private reasoningActive = false;
 
   normalize(notif: SessionNotification): NormalizedUpdate {
     const update = notif.update;
@@ -81,17 +111,27 @@ export class AcpNotificationNormalizer {
         break;
 
       case 'agent_thought_chunk':
-        // Reasoning: no first-class core event yet — retain the raw kind.
-        events.push({ type: 'adapter.native-event', adapter: 'acp', nativeType: 'agent_thought_chunk' });
+        events.push({
+          type: this.reasoningActive ? 'reasoning.progress' : 'reasoning.started',
+          reasoningId: update.messageId ?? undefined,
+        });
+        this.reasoningActive = true;
         break;
 
       case 'tool_call': {
         const toolCallId = update.toolCallId;
-        const tool = update.kind ?? update.title;
-        events.push({ type: 'tool.started', toolCallId, tool });
+        const tool = update.kind ?? update.title ?? 'tool';
+        const presentation = toolPresentation(update.kind ?? undefined, update.title ?? undefined, update.rawInput);
+        events.push({ type: 'tool.started', toolCallId, tool, input: update.rawInput, presentation });
         // A tool_call may arrive already resolved (fast/synchronous tools).
         if (update.status === 'completed') {
-          events.push({ type: 'tool.completed', toolCallId, tool, output: update.rawOutput ?? update.content });
+          events.push({
+            type: 'tool.completed',
+            toolCallId,
+            tool,
+            output: update.rawOutput ?? update.content,
+            presentation,
+          });
         } else if (update.status === 'failed') {
           events.push({ type: 'tool.failed', toolCallId, tool });
         }
@@ -101,10 +141,17 @@ export class AcpNotificationNormalizer {
       case 'tool_call_update': {
         const toolCallId = update.toolCallId;
         const tool = update.kind ?? update.title ?? undefined;
+        const presentation = toolPresentation(update.kind ?? undefined, update.title ?? undefined, update.rawInput);
         if (update.status === 'completed') {
-          events.push({ type: 'tool.completed', toolCallId, tool, output: update.rawOutput ?? update.content });
+          events.push({
+            type: 'tool.completed',
+            toolCallId,
+            tool,
+            output: update.rawOutput ?? update.content,
+            presentation,
+          });
         } else if (update.status === 'failed') {
-          events.push({ type: 'tool.failed', toolCallId, tool });
+          events.push({ type: 'tool.failed', toolCallId, tool, presentation });
         }
         // pending / in_progress: covered by the tool.started from `tool_call`.
         break;
@@ -128,5 +175,9 @@ export class AcpNotificationNormalizer {
     let last = '';
     for (const v of this.messageBuffers.values()) last = v;
     return last;
+  }
+
+  completeReasoning(): void {
+    this.reasoningActive = false;
   }
 }

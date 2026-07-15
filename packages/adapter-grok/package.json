@@ -1,8 +1,8 @@
 {
-  "name": "@vibecook/chopsticks-adapter-acp",
+  "name": "@vibecook/chopsticks-adapter-grok",
   "version": "0.0.0",
   "type": "module",
-  "description": "Generic Agent Client Protocol (ACP) adapter: transport connectors, session/update normalization, lifecycle, permissions, and deterministic prompt injection.",
+  "description": "Grok adapter for Chopsticks: native TUI, shared leader lifecycle, and ACP control composition.",
   "license": "MIT",
   "author": "James Yong",
   "main": "./src/index.ts",
@@ -29,10 +29,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.2.1",
+    "@vibecook/chopsticks-adapter-acp": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*"
-  },
-  "devDependencies": {
-    "@vibecook/chopsticks-testing": "workspace:*"
   }
 }

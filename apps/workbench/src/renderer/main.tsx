@@ -18,9 +18,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AvocadoProvider, TerminalSurface, type TerminalCoreActions } from '@vibecook/avocado-sdk/react';
-import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
 import type {
-  AgentEventMessage,
   AgentKind,
   AgentStateMessage,
   CreateAgentSessionOptions,
@@ -49,7 +47,6 @@ const backend: ChopsticksTerminalBackend = createChopsticksBackend();
 const isMac = navigator.platform.toLowerCase().includes('mac');
 const shellName = 'shell';
 
-const EVENT_TAIL_MAX = 50;
 const SPAWN_COLS = 80;
 const SPAWN_ROWS = 24;
 
@@ -182,7 +179,6 @@ export function App(): JSX.Element {
   const [workspaceMode, setWorkspaceMode] = useState<'direct' | 'exclusive' | 'worktree'>('direct');
 
   const [agentState, setAgentState] = useState(() => new Map<string, AgentStateMessage>());
-  const [agentEvents, setAgentEvents] = useState(() => new Map<string, AgentEventEnvelope[]>());
   const [agentWorkspace, setAgentWorkspace] = useState(() => new Map<string, WorkspacePanelData>());
   const [agentSessionId, setAgentSessionId] = useState(() => new Map<string, string>());
 
@@ -287,11 +283,6 @@ export function App(): JSX.Element {
         releasePane(pane, opts.killSession);
         stopDiffPoll(pane.sessionId);
         setAgentState((m) => {
-          const n = new Map(m);
-          n.delete(pane.sessionId);
-          return n;
-        });
-        setAgentEvents((m) => {
           const n = new Map(m);
           n.delete(pane.sessionId);
           return n;
@@ -515,19 +506,11 @@ export function App(): JSX.Element {
       const canResume = agentSessionId.has(pane.sessionId);
       // Treat as exited if session no longer running in maps and we saw exit —
       // panel uses exited for Resume affordance; we pass false until exit wire.
-      panel.render(
-        pane.sessionId,
-        pane.agentKind,
-        agentState.get(pane.sessionId),
-        agentEvents.get(pane.sessionId) ?? [],
-        workspace,
-        false,
-        canResume,
-      );
+      panel.render(pane.sessionId, pane.agentKind, agentState.get(pane.sessionId), workspace, false, canResume);
     } else {
       panel.hide();
     }
-  }, [focusedSession, agentState, agentEvents, agentWorkspace, agentSessionId]);
+  }, [focusedSession, agentState, agentWorkspace, agentSessionId]);
 
   // ─── Lifecycle: first tab, exit, IPC, restore, keybindings ────────────
 
@@ -602,17 +585,6 @@ export function App(): JSX.Element {
       chopsticks.onExit((exit: ExitEvent) => {
         // Banner is also emitted via backend.pty.onExit above.
         void exit;
-      }),
-      chopsticks.onAgentEvents((events: AgentEventMessage[]) => {
-        setAgentEvents((prev) => {
-          const next = new Map(prev);
-          for (const { runtimeSessionId, envelope } of events) {
-            const buf = [...(next.get(runtimeSessionId) ?? []), envelope];
-            if (buf.length > EVENT_TAIL_MAX) buf.splice(0, buf.length - EVENT_TAIL_MAX);
-            next.set(runtimeSessionId, buf);
-          }
-          return next;
-        });
       }),
       chopsticks.onAgentState((state: AgentStateMessage) => {
         setAgentState((prev) => {

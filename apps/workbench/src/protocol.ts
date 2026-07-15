@@ -17,12 +17,9 @@
 
 // Type-only imports: erased at build time, so the runtime adapter/core code is
 // never pulled into the sandboxed preload or the browser renderer bundle.
+import type { ObservationLevel, PromptReceipt as CorePromptReceipt, ToolPresentation } from '@vibecook/chopsticks-core';
 import type {
-  AgentEventEnvelope,
-  ObservationLevel,
-  PromptReceipt as CorePromptReceipt,
-} from '@vibecook/chopsticks-core';
-import type {
+  AgentConversationSnapshot,
   AgentSessionInfo as RuntimeAgentSessionInfo,
   AgentWorkspaceFinal,
   AgentWorkspaceInfo,
@@ -141,7 +138,14 @@ export type WorkspaceFinalEvent = AgentWorkspaceFinal;
 export interface SerializedSessionState {
   lifecycle: string;
   activeTurn?: { id?: string; startedAt: string };
-  tools: { toolCallId: string; tool?: string; state: 'requested' | 'running'; input?: unknown }[];
+  activeReasoning?: { reasoningId?: string; startedAt: string };
+  tools: {
+    toolCallId: string;
+    tool?: string;
+    state: 'requested' | 'running';
+    input?: unknown;
+    presentation?: ToolPresentation;
+  }[];
   permissions: { requestId: string; toolCallId?: string; tool?: string }[];
   subagents: { subagentId: string; agentType?: string }[];
   tasks: { taskId: string; description?: string }[];
@@ -152,17 +156,12 @@ export interface SerializedSessionState {
   diagnostics: { sequence: number; code: string; message: string }[];
 }
 
-/** One batched agent-event push element: which session, and the stamped envelope. */
-export interface AgentEventMessage {
-  runtimeSessionId: string;
-  envelope: AgentEventEnvelope;
-}
-
 /** A state snapshot push: the serialized reducer state plus the honest observation level. */
 export interface AgentStateMessage {
   runtimeSessionId: string;
   state: SerializedSessionState;
   observationLevel: ObservationLevel;
+  conversation: AgentConversationSnapshot;
 }
 
 /** Programmatic prompt injection request (DESIGN §17); text is pasted verbatim then submitted. */
@@ -177,7 +176,7 @@ export type PromptReceipt = CorePromptReceipt;
 /**
  * The full renderer API surface exposed on `window.chopsticks` by the preload
  * (DESIGN §13.2). Deliberately narrow: no Node APIs, no arbitrary IPC channels.
- * `onChunk`/`onExit`/`onAgentEvents`/`onAgentState` return an unsubscribe function.
+ * Push subscriptions return an unsubscribe function.
  */
 export interface ChopsticksBridge {
   createSession(opts: CreateSessionOptions): Promise<SessionDescriptor>;
@@ -190,7 +189,6 @@ export interface ChopsticksBridge {
   onExit(cb: (exit: ExitEvent) => void): () => void;
   createAgentSession(opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult>;
   submitPrompt(opts: SubmitPromptOptions): Promise<PromptReceipt>;
-  onAgentEvents(cb: (events: AgentEventMessage[]) => void): () => void;
   onAgentState(cb: (state: AgentStateMessage) => void): () => void;
   // Workspace surface: live diff for the panel, and the final record on exit.
   workspaceDiff(runtimeSessionId: string): Promise<WorkspaceDiff | null>;

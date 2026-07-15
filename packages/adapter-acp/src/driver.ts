@@ -1,6 +1,6 @@
 /**
  * Generic ACP session driver (M6 / A3) — the structured-driver composition for
- * ANY Agent Client Protocol agent (Grok first; the point is genericity). Sibling
+ * any Agent Client Protocol agent. Sibling
  * of the Codex `createCodexSession`: Codex speaks its own app-server JSON-RPC,
  * ACP speaks the standardized protocol, but both are `structured` drivers —
  * observation AND control run over the protocol, there is no PTY.
@@ -20,8 +20,7 @@
  * the turn completes later via events — same contract as the Codex driver.
  *
  * `observationLevel()` is honestly `'structured'`. Hosting a native TUI beside
- * this driver (Grok's leader mode) is the workbench's job (A6);
- * `notifyUserInput()` is the seam that wiring will use.
+ * this driver is an agent-specific composition outside this package.
  */
 
 import { performance } from 'node:perf_hooks';
@@ -48,7 +47,7 @@ import type {
   SessionNotification,
 } from '@agentclientprotocol/sdk';
 import { AcpNotificationNormalizer } from './normalizer.js';
-import { spawnAcpConnection, type AcpConnector } from './connection.js';
+import type { AcpConnector } from './connection.js';
 
 export type AcpApprovalDecision = 'approved' | 'denied';
 
@@ -61,13 +60,8 @@ export interface AcpApprovalRequest {
 
 export interface CreateAcpSessionOptions {
   cwd: string;
-  /** Connector override (tests). Defaults to spawning `grok agent stdio`. */
-  connector?: AcpConnector;
-  /** Executable for the default spawn connector. Default `grok`. */
-  executable?: string;
-  /** Args for the default spawn connector. Default `['agent', 'stdio']`. */
-  args?: string[];
-  env?: NodeJS.ProcessEnv;
+  /** Agent-specific transport. ACP itself does not define a command to spawn. */
+  connector: AcpConnector;
   /** Resume an existing ACP session by id (`session/load`, replays history). */
   resume?: string;
   /** Client capabilities to advertise. Default: filesystem disabled. */
@@ -104,7 +98,11 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
   const observation: ObservationLevel = 'structured';
   const listeners = new Set<(e: AgentEventEnvelope) => void>();
 
-  function apply(event: AgentEvent, source: AgentEventEnvelope['source']): void {
+  function apply(
+    event: AgentEvent,
+    source: AgentEventEnvelope['source'],
+    meta: { confidence?: AgentEventEnvelope['confidence']; nativeEvent?: unknown } = {},
+  ): void {
     const envelope = stamper.next({
       sessionId,
       nativeSessionId: sessionId,
@@ -112,8 +110,9 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
       timestamp: new Date().toISOString(),
       monotonicTime: performance.now(),
       source,
-      confidence: 'authoritative',
+      confidence: meta.confidence ?? 'authoritative',
       event,
+      nativeEvent: meta.nativeEvent,
     });
     state = reduceSessionState(state, envelope);
     for (const listener of listeners) {
@@ -128,11 +127,24 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
   const buildClient = (_agent: Agent): Client => ({
     sessionUpdate(params: SessionNotification): void {
       const { events } = normalizer.normalize(params);
+      if (
+        state.activeReasoning &&
+        events.some((event) =>
+          ['assistant.message', 'tool.requested', 'tool.started', 'tool.completed', 'tool.failed'].includes(event.type),
+        )
+      ) {
+        const reasoningId = state.activeReasoning.reasoningId;
+        normalizer.completeReasoning();
+        apply({ type: 'reasoning.completed', reasoningId }, 'native-hook', {
+          confidence: 'derived',
+          nativeEvent: params,
+        });
+      }
       for (const event of events) {
         // Track the running assistant text so turn.completed can seal
         // lastAssistantMessage (ACP has no per-message `final` marker).
         if (event.type === 'assistant.message') turnAssistantText = event.text;
-        apply(event, 'native-hook');
+        apply(event, 'native-hook', { nativeEvent: params });
       }
     },
     async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -148,6 +160,7 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
           presentation: 'host-ui',
         },
         'native-hook',
+        { nativeEvent: params },
       );
       const decision = options.onApproval
         ? await options.onApproval({
@@ -160,15 +173,13 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
       apply(
         { type: 'permission.resolved', requestId, outcome: decision === 'approved' ? 'allowed' : 'denied' },
         'native-hook',
+        { nativeEvent: params },
       );
       return decideOutcome(decision, params.options);
     },
   });
 
-  const connector =
-    options.connector ??
-    spawnAcpConnection({ executable: options.executable, args: options.args, cwd: options.cwd, env: options.env });
-  const conn = connector(buildClient);
+  const conn = options.connector(buildClient);
 
   conn.onClose(({ code, signal }) => {
     apply(
@@ -229,7 +240,15 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
       // NOT await it. The synthesized turn.completed (below) fires when it does.
       // (`prompt` returns MaybePromise — normalize with Promise.resolve.)
       void Promise.resolve(conn.agent.prompt({ sessionId, prompt: [{ type: 'text', text: submission.text }] }))
-        .then((res: PromptResponse) =>
+        .then((res: PromptResponse) => {
+          if (state.activeReasoning) {
+            const reasoningId = state.activeReasoning.reasoningId;
+            normalizer.completeReasoning();
+            apply({ type: 'reasoning.completed', reasoningId }, 'native-hook', {
+              confidence: 'derived',
+              nativeEvent: res,
+            });
+          }
           apply(
             {
               type: 'turn.completed',
@@ -238,14 +257,20 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
               lastAssistantMessage: turnAssistantText || undefined,
             },
             'native-hook',
-          ),
-        )
-        .catch((err: unknown) =>
+            { nativeEvent: res },
+          );
+        })
+        .catch((err: unknown) => {
+          if (state.activeReasoning) {
+            const reasoningId = state.activeReasoning.reasoningId;
+            normalizer.completeReasoning();
+            apply({ type: 'reasoning.completed', reasoningId }, 'native-hook', { confidence: 'derived' });
+          }
           apply(
             { type: 'turn.failed', turnId, error: err instanceof Error ? err.message : String(err) },
             'native-hook',
-          ),
-        );
+          );
+        });
       // ACP injection is structured and atomic — deterministic confirmation.
       return { status: 'confirmed', turnId };
     },

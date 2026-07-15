@@ -100,7 +100,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
   const listeners = new Set<(e: AgentEventEnvelope) => void>();
   const threadListeners = new Set<(info: CodexThreadInfo) => void>();
 
-  function apply(event: AgentEvent, source: AgentEventEnvelope['source']): void {
+  function apply(event: AgentEvent, source: AgentEventEnvelope['source'], nativeEvent?: unknown): void {
     const envelope = stamper.next({
       sessionId: sessionId ?? '',
       nativeSessionId: sessionId,
@@ -110,6 +110,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
       source,
       confidence: 'authoritative',
       event,
+      nativeEvent,
     });
     state = reduceSessionState(state, envelope);
     for (const l of listeners) {
@@ -171,7 +172,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
     if (tid && tid !== sessionId) return;
     const norm = normalizer.normalize({ method, params });
     if (norm.turnId) currentTurnId = norm.turnId;
-    for (const event of norm.events) apply(event, 'native-hook');
+    for (const event of norm.events) apply(event, 'native-hook', { method, params });
   });
 
   client.onClose(() => {

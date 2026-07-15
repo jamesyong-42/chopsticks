@@ -22,7 +22,7 @@
  * one normalizer instance per Claude session.
  */
 
-import type { AgentEvent } from '@vibecook/chopsticks-core';
+import type { AgentEvent, ToolActivityKind, ToolPresentation } from '@vibecook/chopsticks-core';
 
 export interface ClaudeHookPayload {
   session_id?: string;
@@ -53,6 +53,42 @@ const MAX_ACCUMULATORS = 64;
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+const rec = (v: unknown): Record<string, unknown> | undefined =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+
+function toolPresentation(tool: string, input: unknown, completed = false): ToolPresentation {
+  const name = tool.toLowerCase();
+  let kind: ToolActivityKind = 'other';
+  let title = completed ? `Used ${tool}` : `Using ${tool}`;
+  if (['bash', 'shell', 'command', 'execute'].includes(name)) {
+    kind = 'command';
+    title = completed ? 'Ran command' : 'Running command';
+  } else if (['websearch', 'web_search', 'search'].includes(name)) {
+    kind = 'web-search';
+    title = completed ? 'Searched the web' : 'Searching the web';
+  } else if (['webfetch', 'fetch', 'browser'].includes(name)) {
+    kind = 'browser';
+    title = completed ? 'Fetched web content' : 'Fetching web content';
+  } else if (['read', 'glob', 'grep'].includes(name)) {
+    kind = 'file-read';
+    title = completed ? 'Read files' : 'Reading files';
+  } else if (['write', 'edit', 'multiedit', 'apply_patch', 'notebookedit'].includes(name)) {
+    kind = 'file-edit';
+    title = completed ? 'Edited files' : 'Editing files';
+  } else if (name.startsWith('mcp__') || name.startsWith('mcp_')) {
+    kind = 'mcp';
+  }
+  const data = rec(input);
+  const detail =
+    str(data?.command) ??
+    str(data?.query) ??
+    str(data?.url) ??
+    str(data?.file_path) ??
+    str(data?.path) ??
+    str(data?.pattern) ??
+    str(data?.prompt);
+  return { kind, title, detail };
+}
 
 export class ClaudeHookNormalizer {
   private messageBuffers = new Map<string, string>();
@@ -148,6 +184,7 @@ export class ClaudeHookNormalizer {
           toolCallId: str(body.tool_use_id) ?? `tool-${promptId ?? 'unknown'}-${toolName}`,
           tool: toolName,
           input: body.tool_input,
+          presentation: toolPresentation(toolName, body.tool_input),
         });
         break;
       }
@@ -159,6 +196,7 @@ export class ClaudeHookNormalizer {
           tool: str(body.tool_name),
           output: body.tool_response,
           durationMs: num(body.duration_ms),
+          presentation: toolPresentation(str(body.tool_name) ?? 'tool', undefined, true),
         });
         break;
 
@@ -168,6 +206,7 @@ export class ClaudeHookNormalizer {
           toolCallId: str(body.tool_use_id) ?? 'unknown-tool-call',
           tool: str(body.tool_name),
           error: str(body.error),
+          presentation: toolPresentation(str(body.tool_name) ?? 'tool', undefined, true),
         });
         break;
 

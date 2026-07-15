@@ -83,7 +83,7 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
   const observation: ObservationLevel = 'structured';
   const listeners = new Set<(e: AgentEventEnvelope) => void>();
 
-  function apply(event: AgentEvent, source: AgentEventEnvelope['source']): void {
+  function apply(event: AgentEvent, source: AgentEventEnvelope['source'], nativeEvent?: unknown): void {
     const envelope = stamper.next({
       sessionId,
       nativeSessionId: sessionId,
@@ -93,6 +93,7 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
       source,
       confidence: 'authoritative',
       event,
+      nativeEvent,
     });
     state = reduceSessionState(state, envelope);
     for (const listener of listeners) {
@@ -117,7 +118,7 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
     }
     const norm = normalizer.normalize({ method, params });
     if (norm.turnId) currentTurnId = norm.turnId;
-    for (const event of norm.events) apply(event, 'native-hook');
+    for (const event of norm.events) apply(event, 'native-hook', { method, params });
   });
 
   client.onServerRequest(async (method, params, id) => {
@@ -126,11 +127,13 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
     apply(
       { type: 'permission.requested', requestId, tool: method, input: params, presentation: 'host-ui' },
       'native-hook',
+      { method, params, id },
     );
     const decision = options.onApproval ? await options.onApproval({ method, params, requestId: id }) : 'denied';
     apply(
       { type: 'permission.resolved', requestId, outcome: decision === 'approved' ? 'allowed' : 'denied' },
       'native-hook',
+      { method, params, id },
     );
     // UNVERIFIED response shape — no live approval fixture yet (the pong turn had
     // none). Confirm the exact field against a workspace-write probe.

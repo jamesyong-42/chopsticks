@@ -358,11 +358,14 @@ packages/
       transcript-observer.ts
   adapter-codex/
   adapter-gemini/
-  acp/
+  adapter-acp/
     src/
       client.ts
       transport.ts
       normalizer.ts
+  adapter-grok/
+    src/
+      backend.ts
   testing/
     src/
       fake-agent.ts
@@ -379,7 +382,8 @@ Recommended published package boundaries:
 @native-agent/adapter-claude
 @native-agent/adapter-codex
 @native-agent/adapter-gemini
-@native-agent/acp
+@native-agent/adapter-acp
+@native-agent/adapter-grok
 @native-agent/testing
 
 The actual package prefix is a placeholder.
@@ -682,12 +686,14 @@ The renderer owns:
 * Visual layout
 * Session tabs
 * Activity panels
-* Optional normalized event views
+* Provider-neutral conversation snapshots
 * User permission notifications
 * Prompt composer
 * Terminal focus state
 
-It does not receive arbitrary secrets or unrestricted process APIs.
+It does not receive raw adapter events, arbitrary secrets, or unrestricted
+process APIs. Event-to-conversation projection belongs to the shared runtime so
+demo applications do not reconstruct provider behavior.
 
 ⸻
 
@@ -729,6 +735,10 @@ export type AgentEvent =
   | TurnCompletedEvent
   | TurnFailedEvent
   | AssistantMessageEvent
+  | ReasoningStartedEvent
+  | ReasoningProgressEvent
+  | ReasoningSummaryEvent
+  | ReasoningCompletedEvent
   | ToolRequestedEvent
   | ToolStartedEvent
   | ToolCompletedEvent
@@ -752,6 +762,25 @@ export interface ToolRequestedEvent {
   toolCallId: string;
   tool: string;
   input: unknown;
+  presentation?: ToolPresentation;
+}
+export interface ReasoningStartedEvent {
+  type: "reasoning.started";
+  reasoningId?: string;
+}
+export interface ReasoningProgressEvent {
+  type: "reasoning.progress";
+  reasoningId?: string;
+}
+export interface ReasoningSummaryEvent {
+  type: "reasoning.summary";
+  reasoningId?: string;
+  text: string;
+  final?: boolean;
+}
+export interface ReasoningCompletedEvent {
+  type: "reasoning.completed";
+  reasoningId?: string;
 }
 export interface PermissionRequestedEvent {
   type: "permission.requested";
@@ -786,6 +815,13 @@ Because the runtime generates the native session UUID at spawn (Section 16.3), i
 
 The normalizer must not invent a tool-call relationship solely from timing when a native identifier is available.
 
+Reasoning events expose phase presence and protocol-designated summaries, never
+raw hidden thought text. Codex and ACP map their explicit reasoning signals;
+Claude remains on the shared active-turn `working` fallback until a verified
+native reasoning signal exists. Raw protocol payloads remain available to
+library consumers through `AgentEventEnvelope.nativeEvent`, but are not sent to
+the workbench renderer.
+
 ⸻
 
 15. Session State Model
@@ -809,6 +845,10 @@ export interface SessionRuntimeState {
       | "submitted"
       | "running"
       | "completing";
+  };
+  activeReasoning?: {
+    reasoningId?: string;
+    startedAt: string;
   };
   tools: Map<string, ToolRuntimeState>;
   permissions: Map<string, PermissionRuntimeState>;

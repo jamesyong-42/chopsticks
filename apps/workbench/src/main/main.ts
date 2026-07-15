@@ -41,7 +41,6 @@ import { createActionRecorder, type ActionRecorder } from '@vibecook/chopsticks-
 import type { AgentHost, SessionRuntimeState } from '@vibecook/chopsticks-core';
 import { createBuiltinAgentRuntime, type AgentRuntime, type AgentWorkspaceFinal } from '@vibecook/chopsticks-runtime';
 import type {
-  AgentEventMessage,
   AgentSessionInfo,
   ChunkEvent,
   CreateAgentSessionOptions,
@@ -144,7 +143,7 @@ const host: AgentHost = {
 const recorder: ActionRecorder = createActionRecorder({
   onError: (err) => process.stderr.write(`[main] own-action record failed: ${err.message}\n`),
 });
-let agentEventBatch: AgentEventMessage[] = [];
+const dirtyAgentStates = new Set<string>();
 let agentFlushTimer: NodeJS.Timeout | undefined;
 
 // The workbench depends on one provider-neutral runtime. Adapter recipes,
@@ -156,9 +155,9 @@ const agentRuntime: AgentRuntime = createBuiltinAgentRuntime({
   recorder,
   onError: (err) => process.stderr.write(`[main] agent runtime: ${err.message}\n`),
 });
-agentRuntime.onEvent((runtimeSessionId, envelope) => {
-  agentEventBatch.push({ runtimeSessionId, envelope });
-  scheduleAgentFlush();
+agentRuntime.onEvent((runtimeSessionId) => {
+  dirtyAgentStates.add(runtimeSessionId);
+  scheduleAgentStateFlush();
 });
 
 // --- hub lifecycle --------------------------------------------------------
@@ -321,6 +320,7 @@ function serializeState(state: SessionRuntimeState): SerializedSessionState {
   return {
     lifecycle: state.lifecycle,
     activeTurn: state.activeTurn,
+    activeReasoning: state.activeReasoning,
     tools: [...state.tools.values()],
     permissions: [...state.permissions.values()],
     subagents: [...state.subagents.values()],
@@ -333,37 +333,36 @@ function serializeState(state: SessionRuntimeState): SerializedSessionState {
   };
 }
 
-function scheduleAgentFlush(): void {
+function scheduleAgentStateFlush(): void {
   if (agentFlushTimer) return;
-  agentFlushTimer = setTimeout(flushAgentEvents, AGENT_FLUSH_MS);
+  agentFlushTimer = setTimeout(flushAgentStateSnapshots, AGENT_FLUSH_MS);
 }
 
 /**
- * Push the coalesced envelope batch, then one fresh state snapshot per session
- * that appeared in it. Events give the renderer the scrolling tail; the state
- * push gives it the reduced view (lifecycle, tools, pending permissions).
+ * Push at most one fresh provider-neutral state/conversation snapshot per
+ * session per frame. Raw adapter envelopes stop at the runtime boundary.
  */
-function flushAgentEvents(): void {
+function flushAgentStateSnapshots(): void {
   if (agentFlushTimer) {
     clearTimeout(agentFlushTimer);
     agentFlushTimer = undefined;
   }
-  if (agentEventBatch.length === 0) return;
-  const batch = agentEventBatch;
-  agentEventBatch = [];
-  mainWindow?.webContents.send('chopsticks:agentEvents', batch);
-  const touched = new Set(batch.map((m) => m.runtimeSessionId));
+  if (dirtyAgentStates.size === 0) return;
+  const touched = [...dirtyAgentStates];
+  dirtyAgentStates.clear();
   for (const runtimeSessionId of touched) pushAgentState(runtimeSessionId);
 }
 
 function pushAgentState(runtimeSessionId: string): void {
   const state = agentRuntime.sessionState(runtimeSessionId);
   const observationLevel = agentRuntime.observationLevel(runtimeSessionId);
-  if (!state || !observationLevel) return;
+  const conversation = agentRuntime.conversationSnapshot(runtimeSessionId);
+  if (!state || !observationLevel || !conversation) return;
   mainWindow?.webContents.send('chopsticks:agentState', {
     runtimeSessionId,
     state: serializeState(state),
     observationLevel,
+    conversation,
   });
 }
 

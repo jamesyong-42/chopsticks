@@ -14,7 +14,7 @@
  * PTY and lease facts, not agent events.
  */
 
-import type { AgentEvent, AgentEventEnvelope, ProcessExitReason } from './events.js';
+import type { AgentEvent, AgentEventEnvelope, ProcessExitReason, ToolPresentation } from './events.js';
 
 export type SessionLifecycle =
   'preparing' | 'starting' | 'ready' | 'running' | 'interrupting' | 'terminating' | 'exited' | 'failed';
@@ -24,6 +24,12 @@ export interface ToolRuntimeState {
   tool?: string;
   state: 'requested' | 'running';
   input?: unknown;
+  presentation?: ToolPresentation;
+}
+
+export interface ReasoningRuntimeState {
+  reasoningId?: string;
+  startedAt: string;
 }
 
 export interface PermissionRuntimeState {
@@ -51,6 +57,8 @@ export interface ReducerDiagnostic {
 export interface SessionRuntimeState {
   lifecycle: SessionLifecycle;
   activeTurn?: { id?: string; startedAt: string };
+  /** Present only for providers with an explicit reasoning signal. */
+  activeReasoning?: ReasoningRuntimeState;
   /** Tools currently in flight. Completed/failed tools LEAVE this map. */
   tools: Map<string, ToolRuntimeState>;
   /** Pending permission requests. Resolved requests leave this map. */
@@ -146,7 +154,7 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
           `${event.type} for ${event.turnId}, active is ${next.activeTurn.id}`,
         );
       }
-      next = { ...next, activeTurn: undefined };
+      next = { ...next, activeTurn: undefined, activeReasoning: undefined };
       if (!isTerminal(next.lifecycle)) next = { ...next, lifecycle: 'ready' };
       if (event.type === 'turn.completed' && event.lastAssistantMessage !== undefined) {
         next = { ...next, lastAssistantMessage: event.lastAssistantMessage };
@@ -159,6 +167,27 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
       break;
     }
 
+    case 'reasoning.started':
+      next = {
+        ...next,
+        activeReasoning: { reasoningId: event.reasoningId, startedAt: envelope.timestamp },
+      };
+      break;
+
+    case 'reasoning.progress':
+    case 'reasoning.summary':
+      if (!next.activeReasoning) {
+        next = {
+          ...next,
+          activeReasoning: { reasoningId: event.reasoningId, startedAt: envelope.timestamp },
+        };
+      }
+      break;
+
+    case 'reasoning.completed':
+      next = { ...next, activeReasoning: undefined };
+      break;
+
     case 'tool.requested': {
       const tools = new Map(next.tools);
       tools.set(event.toolCallId, {
@@ -166,6 +195,7 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
         tool: event.tool,
         state: 'requested',
         input: event.input,
+        presentation: event.presentation,
       });
       next = { ...next, tools };
       break;
@@ -178,7 +208,8 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
         toolCallId: event.toolCallId,
         tool: event.tool ?? existing?.tool,
         state: 'running',
-        input: existing?.input,
+        input: event.input ?? existing?.input,
+        presentation: event.presentation ?? existing?.presentation,
       });
       next = { ...next, tools };
       break;
@@ -270,6 +301,7 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
         ...next,
         lifecycle: 'exited',
         activeTurn: undefined,
+        activeReasoning: undefined,
         tools: new Map(),
         permissions: new Map(),
         exit: next.exit ?? { reason: event.reason },
@@ -283,6 +315,7 @@ export function reduceSessionState(state: SessionRuntimeState, envelope: AgentEv
         ...next,
         lifecycle: isTerminal(next.lifecycle) ? next.lifecycle : failed ? 'failed' : 'exited',
         activeTurn: undefined,
+        activeReasoning: undefined,
         exit: { exitCode: event.exitCode, signal: event.signal, reason: event.reason },
       };
       break;

@@ -1,33 +1,31 @@
-/**
- * Live ACP driver test — drives REAL `grok agent stdio` through the generic
- * driver (opt-in: `GROK_LIVE=1`). Proves the same path the A1 spike proved, but
- * through the shipped `createAcpSession` + normalizer + reducer, not a throwaway
- * script. Set `CHOPSTICKS_GROK_BIN` to override the executable.
- */
+/** Opt-in live coverage of Grok's direct ACP-over-stdio command. */
 
-import { describe, it, expect } from 'vitest';
 import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAcpSession } from './driver.js';
+import { createAcpSession, createStdioAcpConnector } from '@vibecook/chopsticks-adapter-acp';
+import { describe, expect, it } from 'vitest';
 
 const live = process.env.GROK_LIVE === '1';
 const GROK_BIN = process.env.CHOPSTICKS_GROK_BIN ?? 'grok';
 
-describe.skipIf(!live)('createAcpSession (live grok)', () => {
+describe.skipIf(!live)('Grok ACP composition (live)', () => {
   it('initializes, opens a session, and completes a pong turn', async () => {
     const cwd = mkdtempSync(join(realpathSync(tmpdir()), 'grok-acp-live-'));
-    const session = await createAcpSession({ cwd, executable: GROK_BIN, args: ['agent', 'stdio'] });
+    const session = await createAcpSession({
+      cwd,
+      connector: createStdioAcpConnector({ executable: GROK_BIN, args: ['agent', 'stdio'], cwd }),
+    });
 
     try {
       expect(session.sessionId.length).toBeGreaterThan(0);
       expect(session.observationLevel()).toBe('structured');
 
       const completed = new Promise<{ stopReason?: string }>((resolve) => {
-        const off = session.onEvent((e) => {
-          if (e.event.type === 'turn.completed') {
+        const off = session.onEvent((event) => {
+          if (event.event.type === 'turn.completed') {
             off();
-            resolve({ stopReason: e.event.stopReason });
+            resolve({ stopReason: event.event.stopReason });
           }
         });
       });

@@ -110,11 +110,46 @@ export interface AssistantMessageEvent {
   displayOnly?: boolean;
 }
 
+/** A protocol-authoritative reasoning phase. This carries presence, not hidden thought text. */
+export interface ReasoningStartedEvent {
+  type: 'reasoning.started';
+  reasoningId?: string;
+}
+
+/** An explicitly user-displayable reasoning summary, accumulated by the adapter. */
+export interface ReasoningSummaryEvent {
+  type: 'reasoning.summary';
+  reasoningId?: string;
+  text: string;
+  final?: boolean;
+}
+
+/** A reasoning pulse whose raw provider payload is retained on the envelope. */
+export interface ReasoningProgressEvent {
+  type: 'reasoning.progress';
+  reasoningId?: string;
+}
+
+export interface ReasoningCompletedEvent {
+  type: 'reasoning.completed';
+  reasoningId?: string;
+}
+
+export type ToolActivityKind = 'command' | 'web-search' | 'file-read' | 'file-edit' | 'browser' | 'mcp' | 'other';
+
+/** Provider-neutral UI metadata. Adapters classify native tool names here. */
+export interface ToolPresentation {
+  kind: ToolActivityKind;
+  title: string;
+  detail?: string;
+}
+
 export interface ToolRequestedEvent {
   type: 'tool.requested';
   toolCallId: string;
   tool: string;
   input?: unknown;
+  presentation?: ToolPresentation;
 }
 
 /** For structured/ACP drivers that distinguish acceptance from execution. */
@@ -122,6 +157,8 @@ export interface ToolStartedEvent {
   type: 'tool.started';
   toolCallId: string;
   tool?: string;
+  input?: unknown;
+  presentation?: ToolPresentation;
 }
 
 export interface ToolCompletedEvent {
@@ -130,6 +167,7 @@ export interface ToolCompletedEvent {
   tool?: string;
   output?: unknown;
   durationMs?: number;
+  presentation?: ToolPresentation;
 }
 
 export interface ToolFailedEvent {
@@ -137,6 +175,7 @@ export interface ToolFailedEvent {
   toolCallId: string;
   tool?: string;
   error?: string;
+  presentation?: ToolPresentation;
 }
 
 export interface PermissionRequestedEvent {
@@ -214,6 +253,10 @@ export type AgentEvent =
   | TurnCompletedEvent
   | TurnFailedEvent
   | AssistantMessageEvent
+  | ReasoningStartedEvent
+  | ReasoningProgressEvent
+  | ReasoningSummaryEvent
+  | ReasoningCompletedEvent
   | ToolRequestedEvent
   | ToolStartedEvent
   | ToolCompletedEvent

@@ -311,7 +311,7 @@ body,
   --bad: #f85149;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
 
-  width: 380px;
+  width: clamp(400px, 36vw, 520px);
   flex-shrink: 0;
   min-height: 0;
   border-left: 1px solid var(--line);
@@ -528,10 +528,10 @@ body,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 14px;
+  padding: 20px 18px 24px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 .thread-empty {
   margin: auto;
@@ -545,6 +545,7 @@ body,
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 .msg-role {
   font-family: var(--mono);
@@ -556,71 +557,216 @@ body,
 }
 .msg.user .msg-role {
   color: var(--dim);
+  text-align: right;
 }
 
 .msg-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.msg-text {
-  white-space: pre-wrap;
-  word-break: break-word;
+  min-width: 0;
   line-height: 1.6;
   color: var(--text);
 }
-/* User turns are marked by a thin rule + indent (a blockquote-like device),
- * not a filled bubble — keeps the thread flat and quiet. */
+.msg.user {
+  align-items: flex-end;
+}
 .msg.user .msg-body {
-  border-left: 2px solid var(--line-strong);
-  padding-left: 12px;
+  max-width: 88%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 4px 14px;
+  background: rgba(255, 255, 255, 0.065);
 }
 
-/* Tool chips — outlined mono; state by symbol (◍/✓/✗) + dashed/strike for fail. */
-.msg-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+/* Safe, streamed Markdown. Raw HTML is disabled by the renderer. */
+.markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.tool-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  background: transparent;
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown table {
+  margin: 0.55em 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 1em 0 0.45em;
+  line-height: 1.25;
+  font-size: 1em;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 1.45em;
+}
+.markdown li + li {
+  margin-top: 0.25em;
+}
+.markdown blockquote {
+  padding-left: 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--dim);
+}
+.markdown a {
+  color: var(--text);
+  text-decoration-color: var(--faint);
+  text-underline-offset: 2px;
+}
+.markdown code {
+  padding: 0.12em 0.35em;
   border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.045);
+  font: 0.88em var(--mono);
+}
+.markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #070708;
+}
+.markdown pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  white-space: pre;
+}
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* Provider-neutral activity cards. Activity kind says what is happening;
+ * status says whether that same activity is pending, running, or finished. */
+.activity-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--dim);
   font-family: var(--mono);
   font-size: 10.5px;
-  color: var(--dim);
 }
-.tool-chip .tool-nm {
-  color: var(--text);
+.activity-card summary,
+.activity-transient-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  list-style: none;
 }
-.tool-chip .tool-ic {
+.activity-card summary {
+  cursor: pointer;
+}
+.activity-card summary::-webkit-details-marker {
+  display: none;
+}
+.activity-card summary::after {
+  content: '›';
+  margin-left: 2px;
   color: var(--faint);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
 }
-.tool-chip.running .tool-ic {
-  color: var(--warn);
-  animation: pulse 1.2s ease-in-out infinite;
+.activity-card:not([open]) summary::after {
+  transform: rotate(0deg);
 }
-.tool-chip.done .tool-ic {
-  color: var(--ok);
+.activity-card summary:only-child::after,
+.activity-card.transient summary::after {
+  display: none;
 }
-.tool-chip.failed {
-  border-style: dashed;
+.activity-card.running,
+.activity-card.requested {
+  border-color: color-mix(in srgb, var(--warn) 30%, var(--line));
+}
+.activity-card.failed {
   border-color: color-mix(in srgb, var(--bad) 45%, transparent);
 }
-.tool-chip.failed .tool-nm {
+.activity-icon {
+  width: 17px;
+  flex: 0 0 17px;
   color: var(--dim);
-  text-decoration: line-through;
-  text-decoration-color: var(--faint);
+  text-align: center;
 }
-.tool-chip.failed .tool-ic {
+.activity-card.running .activity-icon,
+.activity-card.requested .activity-icon {
+  color: var(--warn);
+}
+.activity-card.failed .activity-icon,
+.activity-card.failed .activity-state {
   color: var(--bad);
+}
+.activity-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-state {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.activity-spinner {
+  width: 9px;
+  height: 9px;
+  margin-left: auto;
+  flex: 0 0 9px;
+  border: 1px solid var(--faint);
+  border-top-color: var(--warn);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.activity-detail {
+  padding: 0 10px 10px 35px;
+  color: var(--dim);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.activity-detail > code {
+  display: block;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  font: 10px/1.55 var(--mono);
+}
+.activity-detail .markdown {
+  margin-top: 7px;
+  font-family: var(--titlebar-font);
+  font-size: 11.5px;
 }
 
 .stream-cursor {
+  display: inline-block;
   color: var(--text);
   animation: blink 1s step-start infinite;
 }
@@ -628,10 +774,6 @@ body,
   50% {
     opacity: 0;
   }
-}
-.thinking {
-  color: var(--faint);
-  font-style: italic;
 }
 .msg.note .msg-note {
   text-align: center;
@@ -648,22 +790,22 @@ body,
 .composer {
   flex-shrink: 0;
   border-top: 1px solid var(--line);
-  padding: 12px 14px;
+  padding: 12px 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
   background: var(--panel);
 }
 .composer-input {
   width: 100%;
   box-sizing: border-box;
   resize: none;
-  min-height: 36px;
+  min-height: 42px;
   max-height: 140px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
   color: var(--text);
   font: 12.5px var(--titlebar-font);
   line-height: 1.45;
@@ -673,7 +815,7 @@ body,
 }
 .composer-input:focus {
   outline: none;
-  border-color: var(--line-strong);
+  border-color: rgba(255, 255, 255, 0.42);
 }
 .composer-row {
   display: flex;
@@ -684,8 +826,7 @@ body,
   flex: 1;
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
   color: var(--dim);
 }
 .composer-receipt.confirmed {
@@ -697,9 +838,9 @@ body,
 }
 .composer-send {
   font-family: var(--mono);
-  padding: 6px 18px;
+  padding: 7px 18px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--invert-bg);
   color: var(--invert-fg);
   font-weight: 600;

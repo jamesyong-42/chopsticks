@@ -115,6 +115,34 @@ describe('createAgentRuntime', () => {
     });
     expect(observed).toEqual(['one-runtime-1:session.ready']);
 
+    handles.get(first.runtimeSessionId)!.emit({
+      sequence: 3,
+      sessionId: first.sessionId,
+      turnId: 'one-turn',
+      timestamp: new Date().toISOString(),
+      monotonicTime: 3,
+      source: 'native-hook',
+      confidence: 'authoritative',
+      event: { type: 'turn.started', turnId: 'one-turn', prompt: 'hello' },
+    });
+    handles.get(first.runtimeSessionId)!.emit({
+      sequence: 4,
+      sessionId: first.sessionId,
+      turnId: 'one-turn',
+      timestamp: new Date().toISOString(),
+      monotonicTime: 4,
+      source: 'native-hook',
+      confidence: 'authoritative',
+      event: { type: 'assistant.message', messageId: 'm1', text: '**hi**', final: false },
+    });
+    expect(runtime.conversationSnapshot(first.runtimeSessionId)).toMatchObject({
+      responding: true,
+      items: [
+        { kind: 'user', text: 'hello' },
+        { kind: 'assistant', markdown: '**hi**', streaming: true },
+      ],
+    });
+
     expect(await runtime.submitPrompt(second.runtimeSessionId, { text: 'hello' })).toEqual({
       status: 'confirmed',
       turnId: 'two-turn',

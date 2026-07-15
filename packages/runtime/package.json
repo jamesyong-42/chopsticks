@@ -29,9 +29,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vibecook/chopsticks-adapter-acp": "workspace:*",
     "@vibecook/chopsticks-adapter-claude": "workspace:*",
     "@vibecook/chopsticks-adapter-codex": "workspace:*",
+    "@vibecook/chopsticks-adapter-grok": "workspace:*",
     "@vibecook/chopsticks-core": "workspace:*",
     "@vibecook/chopsticks-record": "workspace:*",
     "@vibecook/chopsticks-workspaces": "workspace:*"

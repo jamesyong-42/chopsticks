@@ -2,16 +2,16 @@
  * ACP transport wiring (M6 / A3).
  *
  * A `connector` binds our client-side handler to a live ACP `Agent`. The default
- * spawns a subprocess speaking ACP over stdio (`grok agent stdio`, but any ACP
- * agent works — that's the point of the generic adapter) and frames it with the
- * official SDK's `ndJsonStream`. Tests inject a fake connector that drives the
- * client handler in-memory, mirroring the Codex adapter's scripted transport.
+ * spawns a caller-selected subprocess speaking ACP over stdio and frames it
+ * with the official SDK's `ndJsonStream`. Tests inject a fake connector that
+ * drives the client handler in-memory, mirroring the Codex adapter's scripted
+ * transport.
  *
  * We use `ClientSideConnection` (a persistent `Agent` handle we hold across many
  * prompts) rather than the newer `client().connectWith(stream, op)` helper: that
  * helper scopes the connection to a single callback, which does not fit an
  * `AgentSession` handle whose `submitPrompt()` must drive turns over its whole
- * lifetime. The A1 spike proved this path against real Grok.
+ * lifetime. Integration coverage validates this path against real ACP agents.
  */
 
 import { spawn } from 'node:child_process';
@@ -34,19 +34,19 @@ export interface AcpAgentConnection {
  */
 export type AcpConnector = (toClient: (agent: Agent) => Client) => AcpAgentConnection;
 
-export interface SpawnAcpOptions {
-  /** Executable to spawn. Default `grok`. */
-  executable?: string;
-  /** Args. Default `['agent', 'stdio']` — Grok's ACP-over-stdio mode. */
-  args?: string[];
+export interface StdioAcpConnectorOptions {
+  /** Agent-specific executable. There is deliberately no protocol-level default. */
+  executable: string;
+  /** Agent-specific arguments. Defaults to none. */
+  args?: readonly string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 }
 
-/** Default connector: spawn an ACP agent subprocess and speak ND-JSON over stdio. */
-export function spawnAcpConnection(opts: SpawnAcpOptions = {}): AcpConnector {
+/** Spawn an explicitly selected ACP agent and speak ND-JSON over stdio. */
+export function createStdioAcpConnector(opts: StdioAcpConnectorOptions): AcpConnector {
   return (toClient) => {
-    const child = spawn(opts.executable ?? 'grok', opts.args ?? ['agent', 'stdio'], {
+    const child = spawn(opts.executable, opts.args ?? [], {
       stdio: ['pipe', 'pipe', 'inherit'],
       cwd: opts.cwd,
       env: opts.env,

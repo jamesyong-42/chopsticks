@@ -2,23 +2,22 @@
  * Agent chat panel (DESIGN §12.2 renderer, §19 observation surface).
  *
  * A conversation view over the active agent tab. The renderer never holds a
- * live `AgentSession`; it gets a serialized
- * reducer snapshot + a bounded event tail from main and RECONSTRUCTS a chat
- * thread from them (turn.started → a user message, assistant.message → the
- * assistant reply accumulating in place, tool.* → inline tool chips). On top of
- * that pure presentation sits the ONE control affordance: the composer, whose
- * Send routes back through `submitPrompt`.
+ * live `AgentSession`; it gets a serialized reducer snapshot plus the runtime's
+ * provider-neutral conversation projection. On top of that presentation sits
+ * the one control affordance: the composer, whose Send routes back through
+ * `submitPrompt`.
  *
- * The thread rebuilds on every state/event push (cheap — the tail is bounded);
- * the composer is a separate element that is never rebuilt, so a push never wipes
- * what the user is typing. The status pill's elapsed timer updates on its own
- * without touching the thread.
+ * The thread is rendered by React while the composer remains a separate element,
+ * so state pushes never wipe what the user is typing. The status pill's elapsed
+ * timer updates on its own without touching the thread.
  *
  * The optional git workspace is a
  * collapsible disclosure that hides itself when there is no workspace data.
  */
 
-import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
+import { createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import type { AgentConversationSnapshot } from '@vibecook/chopsticks-runtime';
 import type {
   AgentStateMessage,
   PromptReceipt,
@@ -26,6 +25,7 @@ import type {
   WorkspaceFinalEvent,
   WorkspaceInfo,
 } from '../protocol.js';
+import { ConversationThread } from './components/ConversationThread.js';
 
 const WS_FILES_MAX = 12;
 
@@ -42,182 +42,6 @@ export interface WorkspacePanelData {
   final?: WorkspaceFinalEvent;
   /** Set on a resumed session that had to fall back (e.g. its worktree was gone). */
   note?: string;
-}
-
-// ── Thread reconstruction ───────────────────────────────────────────────────
-
-interface ToolChip {
-  id: string;
-  name: string;
-  status: 'running' | 'done' | 'failed';
-}
-interface ThreadItem {
-  kind: 'user' | 'assistant' | 'note';
-  turnId?: string;
-  text: string;
-  /** Text came from an authoritative (transcript) source, not a display delta. */
-  authoritative: boolean;
-  tools: ToolChip[];
-  streaming: boolean;
-  error?: boolean;
-}
-
-/**
- * Rebuild an ordered chat thread from the bounded event tail.
- *
- * One bubble per ASSISTANT MESSAGE, not per turn: a single turn routinely emits
- * several messages (intro → tool → answer), and each deserves its own bubble in
- * arrival order, exactly as the native TUI shows them.
- *
- * The runtime presents one canonical assistant-message stream; transcript
- * enrichment and provider-specific duplicate suppression are handled before
- * this boundary. A bare message id is still not globally unique, so each id is
- * scoped to its turn before bubbles are reused.
- * Tools are tracked by call-id (so completion updates the right chip) and attach
- * to the message bubble that was open when they fired.
- */
-export function buildThread(events: AgentEventEnvelope[]): ThreadItem[] {
-  const items: ThreadItem[] = [];
-  const byMessage = new Map<string, { item: ThreadItem; turn?: string }>();
-  const chipById = new Map<string, ToolChip>();
-  let lastAssistant: ThreadItem | undefined;
-
-  const turnKeyOf = (env: AgentEventEnvelope, e: { turnId?: string }): string | undefined =>
-    env.promptId ?? env.turnId ?? e.turnId;
-
-  const newAssistant = (turn: string | undefined): ThreadItem => {
-    const a: ThreadItem = {
-      kind: 'assistant',
-      turnId: turn,
-      text: '',
-      authoritative: false,
-      tools: [],
-      streaming: true,
-    };
-    items.push(a);
-    lastAssistant = a;
-    return a;
-  };
-
-  // The bubble a turn-anchored, message-less event (a tool call) belongs to: the
-  // open bubble of this same turn, else a fresh one.
-  const turnBubble = (turn: string | undefined): ThreadItem =>
-    lastAssistant && (lastAssistant.turnId === turn || turn === undefined) ? lastAssistant : newAssistant(turn);
-
-  for (const env of events) {
-    const e = env.event as Record<string, unknown> & { type: string };
-    const turnKey = turnKeyOf(env, e as { turnId?: string });
-    switch (e.type) {
-      case 'turn.started':
-        if (typeof e.prompt === 'string' && e.prompt.trim()) {
-          items.push({
-            kind: 'user',
-            turnId: turnKey,
-            text: e.prompt,
-            authoritative: true,
-            tools: [],
-            streaming: false,
-          });
-        }
-        break;
-      case 'assistant.message': {
-        const messageId = typeof e.messageId === 'string' ? e.messageId : undefined;
-        let a: ThreadItem | undefined;
-        if (messageId) {
-          const ex = byMessage.get(messageId);
-          // Reuse when it's the same turn, or when this copy has no turn of its
-          // own (transcript), or when the remembered copy hadn't learned its turn.
-          if (ex && (ex.turn === turnKey || turnKey === undefined || ex.turn === undefined)) {
-            a = ex.item;
-            if (turnKey !== undefined && ex.turn === undefined) ex.turn = turnKey;
-          }
-          if (!a) {
-            a = newAssistant(turnKey);
-            byMessage.set(messageId, { item: a, turn: turnKey });
-          }
-        } else {
-          a = turnBubble(turnKey);
-        }
-        lastAssistant = a;
-        if (turnKey !== undefined && a.turnId === undefined) a.turnId = turnKey;
-        const authoritative = e.displayOnly === false;
-        if ((authoritative || !a.authoritative) && typeof e.text === 'string') a.text = e.text;
-        if (authoritative) a.authoritative = true;
-        a.streaming = e.final === false;
-        break;
-      }
-      case 'tool.requested':
-      case 'tool.started': {
-        const id = String(e.toolCallId ?? '');
-        if (!chipById.has(id)) {
-          const chip: ToolChip = { id, name: String(e.tool || id || 'tool'), status: 'running' };
-          chipById.set(id, chip);
-          turnBubble(turnKey).tools.push(chip);
-        }
-        break;
-      }
-      case 'tool.completed':
-      case 'tool.failed': {
-        const id = String(e.toolCallId ?? '');
-        const status = e.type === 'tool.failed' ? 'failed' : 'done';
-        const chip = chipById.get(id);
-        if (chip) chip.status = status;
-        else {
-          const created: ToolChip = { id, name: String(e.tool || id || 'tool'), status };
-          chipById.set(id, created);
-          turnBubble(turnKey).tools.push(created);
-        }
-        break;
-      }
-      case 'turn.completed': {
-        // Seal every assistant bubble of this turn; only synthesize one from the
-        // final text when the turn produced no assistant message at all.
-        let sealed = false;
-        for (const item of items) {
-          if (item.kind === 'assistant' && item.turnId === turnKey) {
-            item.streaming = false;
-            sealed = true;
-          }
-        }
-        if (!sealed && typeof e.lastAssistantMessage === 'string' && e.lastAssistantMessage) {
-          const a = newAssistant(turnKey);
-          a.text = e.lastAssistantMessage;
-          a.authoritative = true;
-          a.streaming = false;
-        }
-        break;
-      }
-      case 'turn.failed': {
-        for (const item of items) {
-          if (item.kind === 'assistant' && item.turnId === turnKey) item.streaming = false;
-        }
-        items.push({
-          kind: 'note',
-          text: `turn failed${e.error ? `: ${e.error}` : ''}`,
-          authoritative: true,
-          tools: [],
-          streaming: false,
-          error: true,
-        });
-        break;
-      }
-      case 'notification':
-        if (typeof e.message === 'string' && e.message) {
-          items.push({
-            kind: 'note',
-            text: e.message,
-            authoritative: true,
-            tools: [],
-            streaming: false,
-            error: e.notificationType === 'error',
-          });
-        }
-        break;
-      default:
-        break;
-    }
-  }
-  return items;
 }
 
 // ── DOM helpers ──────────────────────────────────────────────────────────────
@@ -237,7 +61,7 @@ function truncatePath(p: string, max = 42): string {
   return p.length <= max ? p : '…' + p.slice(p.length - (max - 1));
 }
 
-const TOOL_ICON: Record<ToolChip['status'], string> = { running: '◍', done: '✓', failed: '✗' };
+const EMPTY_CONVERSATION: AgentConversationSnapshot = { items: [], responding: false };
 
 export class AgentPanel {
   private shownSessionId: string | undefined;
@@ -255,6 +79,7 @@ export class AgentPanel {
   private readonly wsBody: HTMLDivElement;
   // Conversation
   private readonly thread: HTMLDivElement;
+  private readonly threadRoot: Root;
   // Composer
   private readonly input: HTMLTextAreaElement;
   private readonly sendBtn: HTMLButtonElement;
@@ -262,7 +87,7 @@ export class AgentPanel {
 
   // Live turn ticker: only the status pill updates on tick, never the thread.
   private activeTurnStartedAt: number | undefined;
-  private turnLabel = '';
+  private liveLabel = '';
   private readonly elapsedTimer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -300,15 +125,16 @@ export class AgentPanel {
 
     // The conversation thread.
     this.thread = el('div', 'chat-thread');
+    this.threadRoot = createRoot(this.thread);
 
     // Composer.
     const composer = el('div', 'composer');
     this.input = el('textarea', 'composer-input');
     this.input.rows = 1;
-    this.input.placeholder = 'Message the agent…  (⌘/Ctrl+Enter)';
+    this.input.placeholder = 'Message the agent…';
     this.input.addEventListener('input', () => this.autoGrow());
     this.input.addEventListener('keydown', (ev) => {
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
         void this.submit();
       }
@@ -331,7 +157,6 @@ export class AgentPanel {
     runtimeSessionId: string,
     agentKind: string,
     msg: AgentStateMessage | undefined,
-    events: AgentEventEnvelope[],
     workspace: WorkspacePanelData | undefined,
     exited: boolean,
     canResume: boolean,
@@ -350,27 +175,42 @@ export class AgentPanel {
 
     // Status pill from lifecycle + active turn.
     const state = msg?.state;
-    this.activeTurnStartedAt = state?.activeTurn ? Date.parse(state.activeTurn.startedAt) : undefined;
-    this.turnLabel = state?.activeTurn?.id ?? '';
+    const conversation = msg?.conversation ?? EMPTY_CONVERSATION;
+    const activeTool = state?.tools.find((tool) => tool.state === 'running' || tool.state === 'requested');
+    this.liveLabel = state?.permissions.length
+      ? 'Waiting for permission'
+      : activeTool
+        ? (activeTool.presentation?.title ?? `Using ${activeTool.tool ?? 'tool'}`)
+        : state?.activeReasoning
+          ? 'Thinking'
+          : conversation.responding
+            ? 'Responding'
+            : state?.activeTurn
+              ? 'Working'
+              : '';
+    const activityStartedAt = state?.activeReasoning?.startedAt ?? state?.activeTurn?.startedAt;
+    this.activeTurnStartedAt = activityStartedAt ? Date.parse(activityStartedAt) : undefined;
     this.lifecycle = state?.lifecycle ?? 'preparing';
     this.exited = exited;
     this.renderStatus();
 
     this.renderPerms(state?.permissions ?? []);
     this.renderWorkspace(workspace);
-    this.renderThread(events, switched);
+    this.renderThread(conversation, switched, Boolean(state?.activeTurn));
   }
 
   private lifecycle = 'preparing';
   private exited = false;
 
   private renderStatus(): void {
-    const active = this.activeTurnStartedAt !== undefined;
+    const active = this.activeTurnStartedAt !== undefined || Boolean(this.liveLabel);
     let label: string;
     let tone: string;
     if (active) {
-      const secs = Math.max(0, Math.round((Date.now() - this.activeTurnStartedAt!) / 1000));
-      label = `working · ${secs}s`;
+      const secs = this.activeTurnStartedAt
+        ? Math.max(0, Math.round((Date.now() - this.activeTurnStartedAt) / 1000))
+        : 0;
+      label = `${this.liveLabel || 'Working'} · ${secs}s`;
       tone = 'working';
     } else if (this.lifecycle === 'failed') {
       label = 'failed';
@@ -385,7 +225,7 @@ export class AgentPanel {
       label = this.lifecycle;
       tone = 'idle';
     }
-    this.statusText.textContent = this.turnLabel && active ? `${label} · ${this.turnLabel}` : label;
+    this.statusText.textContent = label;
     this.statusDot.dataset.tone = tone;
     this.root.dataset.busy = active ? '1' : '0';
   }
@@ -403,55 +243,14 @@ export class AgentPanel {
     );
   }
 
-  private renderThread(events: AgentEventEnvelope[], switched: boolean): void {
+  private renderThread(conversation: AgentConversationSnapshot, switched: boolean, workingFallback: boolean): void {
     // Preserve auto-scroll: stick to the bottom unless the user scrolled up.
     const nearBottom = switched || this.thread.scrollHeight - this.thread.scrollTop - this.thread.clientHeight < 40;
 
-    const items = buildThread(events);
-    this.thread.replaceChildren();
-
-    if (items.length === 0) {
-      this.thread.append(el('div', 'thread-empty', 'No messages yet. Send one below to get started.'));
-    }
-
-    for (const item of items) {
-      const row = el('div', `msg ${item.kind}${item.error ? ' error' : ''}`);
-      if (item.kind === 'note') {
-        row.append(el('div', 'msg-note', item.text));
-        this.thread.append(row);
-        continue;
-      }
-      const label = el('div', 'msg-role');
-      if (item.kind === 'user') {
-        label.textContent = 'you';
-      } else {
-        label.textContent = this.agentKind;
-        label.dataset.kind = this.agentKind;
-      }
-      row.append(label);
-
-      const body = el('div', 'msg-body');
-      if (item.text) body.append(el('div', 'msg-text', item.text));
-
-      if (item.tools.length > 0) {
-        const tools = el('div', 'msg-tools');
-        for (const t of item.tools) {
-          const chip = el('span', `tool-chip ${t.status}`);
-          chip.append(el('span', 'tool-ic', TOOL_ICON[t.status]), el('span', 'tool-nm', t.name));
-          tools.append(chip);
-        }
-        body.append(tools);
-      }
-
-      if (item.streaming) body.append(el('span', 'stream-cursor', '▍'));
-      if (!item.text && item.tools.length === 0 && item.streaming) {
-        body.append(el('span', 'thinking', 'thinking…'));
-      }
-      row.append(body);
-      this.thread.append(row);
-    }
-
-    if (nearBottom) this.thread.scrollTop = this.thread.scrollHeight;
+    this.threadRoot.render(
+      createElement(ConversationThread, { conversation, agentKind: this.agentKind, workingFallback }),
+    );
+    if (nearBottom) requestAnimationFrame(() => (this.thread.scrollTop = this.thread.scrollHeight));
   }
 
   private renderWorkspace(data: WorkspacePanelData | undefined): void {
@@ -508,6 +307,7 @@ export class AgentPanel {
 
   dispose(): void {
     clearInterval(this.elapsedTimer);
+    this.threadRoot.unmount();
   }
 
   private autoGrow(): void {
@@ -520,7 +320,7 @@ export class AgentPanel {
     this.input.style.height = 'auto';
     this.input.disabled = false;
     this.sendBtn.disabled = false;
-    this.receiptBox.textContent = '';
+    this.receiptBox.textContent = 'Enter to send · Shift+Enter for newline';
     this.receiptBox.className = 'composer-receipt';
   }
 

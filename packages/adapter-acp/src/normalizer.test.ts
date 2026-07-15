@@ -30,10 +30,17 @@ describe('AcpNotificationNormalizer', () => {
     expect(r.events).toEqual([]);
   });
 
-  it('retains agent_thought_chunk as a native-event (no first-class reasoning event)', () => {
+  it('maps thought chunks to presence-only reasoning events', () => {
     const n = new AcpNotificationNormalizer();
-    const r = n.normalize(note({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } }));
-    expect(r.events).toEqual([{ type: 'adapter.native-event', adapter: 'acp', nativeType: 'agent_thought_chunk' }]);
+    const first = n.normalize(
+      note({ sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1', content: { type: 'text', text: 'secret' } }),
+    );
+    const next = n.normalize(
+      note({ sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1', content: { type: 'text', text: 'more' } }),
+    );
+    expect(first.events).toEqual([{ type: 'reasoning.started', reasoningId: 'thought-1' }]);
+    expect(next.events).toEqual([{ type: 'reasoning.progress', reasoningId: 'thought-1' }]);
+    expect(JSON.stringify([...first.events, ...next.events])).not.toContain('secret');
   });
 
   it('maps tool_call → tool.started and tool_call_update(completed) → tool.completed', () => {
@@ -45,8 +52,24 @@ describe('AcpNotificationNormalizer', () => {
       note({ sessionUpdate: 'tool_call_update', toolCallId: 'tc1', status: 'completed', rawOutput: 'ok' }),
     );
 
-    expect(started.events).toEqual([{ type: 'tool.started', toolCallId: 'tc1', tool: 'execute' }]);
-    expect(done.events).toEqual([{ type: 'tool.completed', toolCallId: 'tc1', tool: undefined, output: 'ok' }]);
+    expect(started.events).toEqual([
+      {
+        type: 'tool.started',
+        toolCallId: 'tc1',
+        tool: 'execute',
+        input: undefined,
+        presentation: { kind: 'command', title: 'run', detail: undefined },
+      },
+    ]);
+    expect(done.events).toEqual([
+      {
+        type: 'tool.completed',
+        toolCallId: 'tc1',
+        tool: undefined,
+        output: 'ok',
+        presentation: { kind: 'other', title: 'Using tool', detail: undefined },
+      },
+    ]);
   });
 
   it('emits tool.started AND tool.completed when a tool_call arrives already completed', () => {
@@ -62,15 +85,34 @@ describe('AcpNotificationNormalizer', () => {
       }),
     );
     expect(r.events).toEqual([
-      { type: 'tool.started', toolCallId: 'tc2', tool: 'read' },
-      { type: 'tool.completed', toolCallId: 'tc2', tool: 'read', output: 'x' },
+      {
+        type: 'tool.started',
+        toolCallId: 'tc2',
+        tool: 'read',
+        input: undefined,
+        presentation: { kind: 'file-read', title: 'read', detail: undefined },
+      },
+      {
+        type: 'tool.completed',
+        toolCallId: 'tc2',
+        tool: 'read',
+        output: 'x',
+        presentation: { kind: 'file-read', title: 'read', detail: undefined },
+      },
     ]);
   });
 
   it('maps tool_call_update(failed) → tool.failed', () => {
     const n = new AcpNotificationNormalizer();
     const r = n.normalize(note({ sessionUpdate: 'tool_call_update', toolCallId: 'tc3', status: 'failed' }));
-    expect(r.events).toEqual([{ type: 'tool.failed', toolCallId: 'tc3', tool: undefined }]);
+    expect(r.events).toEqual([
+      {
+        type: 'tool.failed',
+        toolCallId: 'tc3',
+        tool: undefined,
+        presentation: { kind: 'other', title: 'Using tool', detail: undefined },
+      },
+    ]);
   });
 
   it('drops intermediate tool_call_update(in_progress) — covered by tool.started', () => {

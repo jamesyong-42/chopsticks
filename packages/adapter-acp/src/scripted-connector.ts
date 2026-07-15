@@ -15,10 +15,12 @@ export interface ScriptedAcpOptions {
   reply: string;
   /** Also drive a tool_call + tool_call_update pair during the turn. */
   toolTurn?: boolean;
+  /** Also emit a protocol thought chunk before visible activity. */
+  thought?: string;
 }
 
 export function scriptedAcpConnector(opts: ScriptedAcpOptions): AcpConnector {
-  const { sessionId, reply, toolTurn } = opts;
+  const { sessionId, reply, toolTurn, thought } = opts;
   return (toClient) => {
     let onCls: ((info: { code: number | null; signal: NodeJS.Signals | null }) => void) | undefined;
     let client: Client;
@@ -40,6 +42,16 @@ export function scriptedAcpConnector(opts: ScriptedAcpOptions): AcpConnector {
           sessionId,
           update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: promptText } },
         });
+        if (thought) {
+          await client.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              messageId: 'thought-1',
+              content: { type: 'text', text: thought },
+            },
+          });
+        }
         if (toolTurn) {
           await client.sessionUpdate({
             sessionId,

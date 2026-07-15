@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import type { AgentEvent } from '@vibecook/chopsticks-core';
+import type { AgentEvent, AgentEventEnvelope } from '@vibecook/chopsticks-core';
 import { createCodexSession } from './driver.js';
 import type { Transport } from './app-server-client.js';
 
 const THREAD = '019f5d86-423a-7083-ab79-2deb044599c1';
 const TURN = '019f5d86-42e2-7a03-844c-0de529f5ae8d';
 const MSG = 'msg_pong';
+const REASONING = 'reasoning_1';
 const ROLLOUT = '/Users/x/.codex/sessions/2026/07/13/rollout-019f5d86.jsonl';
 const PROMPT = 'say pong';
 
@@ -17,6 +18,35 @@ function turnStream(): unknown[] {
     { jsonrpc: '2.0', method: 'turn/started', params: { threadId: THREAD, turn: { id: TURN, status: 'inProgress' } } },
     { jsonrpc: '2.0', method: 'item/started', params: { item: userItem, threadId: THREAD, turnId: TURN } },
     { jsonrpc: '2.0', method: 'item/completed', params: { item: userItem, threadId: THREAD, turnId: TURN } },
+    {
+      jsonrpc: '2.0',
+      method: 'item/started',
+      params: { item: { type: 'reasoning', id: REASONING, summary: [] }, threadId: THREAD, turnId: TURN },
+    },
+    {
+      jsonrpc: '2.0',
+      method: 'item/reasoning/textDelta',
+      params: { threadId: THREAD, turnId: TURN, itemId: REASONING, delta: 'private thought text' },
+    },
+    {
+      jsonrpc: '2.0',
+      method: 'item/reasoning/summaryTextDelta',
+      params: { threadId: THREAD, turnId: TURN, itemId: REASONING, delta: 'Checked the request.' },
+    },
+    {
+      jsonrpc: '2.0',
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'reasoning',
+          id: REASONING,
+          content: ['private thought text'],
+          summary: ['Checked the request.'],
+        },
+        threadId: THREAD,
+        turnId: TURN,
+      },
+    },
     {
       jsonrpc: '2.0',
       method: 'item/agentMessage/delta',
@@ -106,7 +136,11 @@ describe('createCodexSession', () => {
     const s = scriptedAppServer();
     const session = await createCodexSession({ cwd: '/x', transport: s.transport });
     const events: AgentEvent[] = [];
-    session.onEvent((e) => events.push(e.event));
+    const envelopes: AgentEventEnvelope[] = [];
+    session.onEvent((e) => {
+      events.push(e.event);
+      envelopes.push(e);
+    });
 
     const receipt = await session.submitPrompt({ text: PROMPT });
     expect(receipt.status).toBe('confirmed'); // deterministic — never uncertain
@@ -116,6 +150,15 @@ describe('createCodexSession', () => {
     expect(session.state().lastAssistantMessage).toBe('pong');
     expect(events.some((e) => e.type === 'assistant.message' && e.final === true && e.text === 'pong')).toBe(true);
     expect(events.some((e) => e.type === 'turn.completed')).toBe(true);
+    expect(events.some((e) => e.type === 'reasoning.started')).toBe(true);
+    expect(events.some((e) => e.type === 'reasoning.summary' && e.text === 'Checked the request.')).toBe(true);
+    expect(session.state().activeReasoning).toBeUndefined();
+    const rawThought = envelopes.find((e) => e.event.type === 'reasoning.progress');
+    expect(rawThought?.nativeEvent).toMatchObject({
+      method: 'item/reasoning/textDelta',
+      params: { delta: 'private thought text' },
+    });
+    expect(JSON.stringify(rawThought?.event)).not.toContain('private thought text');
 
     // The turn was driven with structured input + a client message id (C4 confirm channel).
     const ts = s.sent.find((m) => m.method === 'turn/start');

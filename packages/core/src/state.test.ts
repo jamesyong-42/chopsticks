@@ -104,6 +104,27 @@ describe('reduceSessionState transitions', () => {
     expect(state.counters.toolsFailed).toBe(1);
   });
 
+  it('tracks explicit reasoning independently and clears it at turn completion', () => {
+    const mid = replay(
+      stampAll([
+        { type: 'turn.started', turnId: 'p1' },
+        { type: 'reasoning.started', reasoningId: 'r1' },
+        { type: 'tool.started', toolCallId: 't1', tool: 'command' },
+      ]),
+    );
+    expect(mid.activeReasoning).toMatchObject({ reasoningId: 'r1' });
+    expect(mid.tools.has('t1')).toBe(true);
+
+    const done = replay(
+      stampAll([
+        { type: 'turn.started', turnId: 'p1' },
+        { type: 'reasoning.started', reasoningId: 'r1' },
+        { type: 'turn.completed', turnId: 'p1' },
+      ]),
+    );
+    expect(done.activeReasoning).toBeUndefined();
+  });
+
   it('session exit ends the active turn and clears in-flight tools with diagnostics', () => {
     const state = replay(
       stampAll([

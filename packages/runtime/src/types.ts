@@ -14,6 +14,7 @@ import type {
   WorkspaceMode,
   WorkspaceSessionMetadata,
 } from '@vibecook/chopsticks-workspaces';
+import type { AgentConversationSnapshot } from './conversation.js';
 
 /** Built-in provider ids. Applications select one; implementation stays here. */
 export type BuiltinAgentKind = 'claude' | 'codex' | 'grok';
@@ -92,6 +93,7 @@ export interface AgentRuntime {
   sessionInfo(runtimeSessionId: string): AgentSessionInfo | undefined;
   sessionState(runtimeSessionId: string): SessionRuntimeState | undefined;
   observationLevel(runtimeSessionId: string): ObservationLevel | undefined;
+  conversationSnapshot(runtimeSessionId: string): AgentConversationSnapshot | undefined;
   onEvent(listener: (runtimeSessionId: string, envelope: AgentEventEnvelope) => void): () => void;
   submitPrompt(runtimeSessionId: string, submission: PromptSubmission): Promise<PromptReceipt>;
   notifyUserInput(runtimeSessionId: string): void;

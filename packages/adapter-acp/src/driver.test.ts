@@ -86,6 +86,32 @@ describe('createAcpSession', () => {
     }
   });
 
+  it('surfaces thought presence, retains the raw payload, and closes reasoning before the answer', async () => {
+    const session = await createAcpSession({
+      cwd: '/x',
+      connector: scriptedAcpConnector({ sessionId: SID, reply: 'done', thought: 'private thought text' }),
+    });
+    const envelopes: AgentEventEnvelope[] = [];
+    const off = session.onEvent((envelope) => envelopes.push(envelope));
+    try {
+      await driveTurn(session, 'think first');
+      const started = envelopes.find((envelope) => envelope.event.type === 'reasoning.started');
+      const completed = envelopes.find((envelope) => envelope.event.type === 'reasoning.completed');
+      const answer = envelopes.find((envelope) => envelope.event.type === 'assistant.message');
+      expect(started?.event).toEqual({ type: 'reasoning.started', reasoningId: 'thought-1' });
+      expect(started?.nativeEvent).toMatchObject({
+        update: { sessionUpdate: 'agent_thought_chunk', content: { text: 'private thought text' } },
+      });
+      expect(completed?.confidence).toBe('derived');
+      expect(completed!.sequence).toBeLessThan(answer!.sequence);
+      expect(JSON.stringify(started?.event)).not.toContain('private thought text');
+      expect(session.state().activeReasoning).toBeUndefined();
+    } finally {
+      off();
+      await session.dispose();
+    }
+  });
+
   it('dispose() is idempotent', async () => {
     const session = await createAcpSession({
       cwd: '/x',

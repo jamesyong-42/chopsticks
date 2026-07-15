@@ -19,16 +19,18 @@
  *   `item/completed`(agentMessage) emits the authoritative full text with
  *   `final:true`. Unlike Claude's transcript-sourced text, this is authoritative
  *   from the protocol, so `displayOnly:false`.
+ * - Reasoning notifications become presence events plus the protocol-designated
+ *   summary stream. Raw thought text is never copied into core events; it remains
+ *   available only on the envelope's native payload.
  * - Pure infra/account/UI notifications (see AMBIENT) are NOT agent semantics
- *   and are dropped. Everything else unmodeled — reasoning deltas, token usage,
- *   sub-stream deltas — is RETAINED as `adapter.native-event` (ADR-008), never
- *   silently lost.
+ *   and are dropped. Everything else unmodeled — token usage and sub-stream
+ *   deltas — is RETAINED as `adapter.native-event` (ADR-008), never silently lost.
  *
  * Stateful by necessity (delta accumulation, the deferred-turn join) — one
  * normalizer instance per Codex session.
  */
 
-import type { AgentEvent } from '@vibecook/chopsticks-core';
+import type { AgentEvent, ToolActivityKind, ToolPresentation } from '@vibecook/chopsticks-core';
 
 export interface CodexServerNotification {
   method: string;
@@ -77,8 +79,25 @@ function itemText(item: Record<string, unknown>): string {
   return content.map((c) => (rec(c)?.type === 'text' ? (str(rec(c)?.text) ?? '') : '')).join('');
 }
 
+function detailOf(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && value.every((part) => typeof part === 'string')) return value.join(' ');
+  if (value === undefined) return undefined;
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 240 ? `${text.slice(0, 237)}…` : text;
+  } catch {
+    return undefined;
+  }
+}
+
+function presentation(kind: ToolActivityKind, title: string, detail?: unknown): ToolPresentation {
+  return { kind, title, detail: detailOf(detail) };
+}
+
 export class CodexNotificationNormalizer {
   private messageBuffers = new Map<string, string>();
+  private reasoningSummaries = new Map<string, string>();
   private pendingTurn: { turnId?: string; emitted: boolean } | undefined;
 
   normalize(notif: CodexServerNotification): NormalizedNotification {
@@ -124,22 +143,106 @@ export class CodexNotificationNormalizer {
           }
           break;
 
+        case 'reasoning': {
+          if (phase === 'started') {
+            events.push({ type: 'reasoning.started', reasoningId: itemId });
+          } else {
+            const summary = Array.isArray(item.summary)
+              ? item.summary.filter((part): part is string => typeof part === 'string').join('\n\n')
+              : undefined;
+            if (summary && summary !== this.reasoningSummaries.get(itemId)) {
+              events.push({ type: 'reasoning.summary', reasoningId: itemId, text: summary, final: true });
+            }
+            this.reasoningSummaries.delete(itemId);
+            events.push({ type: 'reasoning.completed', reasoningId: itemId });
+          }
+          break;
+        }
+
         // UNVERIFIED — the C1 "pong" turn used no tools, so these item types have
         // no captured fixtures yet. Mapped structurally; confirm exact shapes
         // (ids, output fields) with a workspace-write probe (M5 C4).
         case 'commandExecution':
         case 'localShellCall':
-          if (phase === 'started') events.push({ type: 'tool.started', toolCallId: itemId, tool: 'command' });
-          else events.push({ type: 'tool.completed', toolCallId: itemId, tool: 'command', output: item.output });
+          if (phase === 'started') {
+            events.push({
+              type: 'tool.started',
+              toolCallId: itemId,
+              tool: 'command',
+              input: item.command ?? item.cmd,
+              presentation: presentation('command', 'Running command', item.command ?? item.cmd),
+            });
+          } else {
+            events.push({
+              type: 'tool.completed',
+              toolCallId: itemId,
+              tool: 'command',
+              output: item.output,
+              presentation: presentation('command', 'Ran command', item.command ?? item.cmd),
+            });
+          }
           break;
 
         case 'fileChange':
-          if (phase === 'started') events.push({ type: 'tool.started', toolCallId: itemId, tool: 'apply_patch' });
-          else events.push({ type: 'tool.completed', toolCallId: itemId, tool: 'apply_patch' });
+          if (phase === 'started') {
+            events.push({
+              type: 'tool.started',
+              toolCallId: itemId,
+              tool: 'apply_patch',
+              presentation: presentation('file-edit', 'Editing files', item.changes ?? item.path),
+            });
+          } else {
+            events.push({
+              type: 'tool.completed',
+              toolCallId: itemId,
+              tool: 'apply_patch',
+              presentation: presentation('file-edit', 'Edited files', item.changes ?? item.path),
+            });
+          }
+          break;
+
+        case 'webSearch':
+          if (phase === 'started') {
+            events.push({
+              type: 'tool.started',
+              toolCallId: itemId,
+              tool: 'web_search',
+              input: item.query,
+              presentation: presentation('web-search', 'Searching the web', item.query),
+            });
+          } else {
+            events.push({
+              type: 'tool.completed',
+              toolCallId: itemId,
+              tool: 'web_search',
+              output: item.result,
+              presentation: presentation('web-search', 'Searched the web', item.query),
+            });
+          }
+          break;
+
+        case 'mcpToolCall':
+          if (phase === 'started') {
+            events.push({
+              type: 'tool.started',
+              toolCallId: itemId,
+              tool: str(item.tool) ?? str(item.name) ?? 'mcp',
+              input: item.arguments,
+              presentation: presentation('mcp', str(item.name) ?? 'Using MCP tool', item.arguments),
+            });
+          } else {
+            events.push({
+              type: 'tool.completed',
+              toolCallId: itemId,
+              tool: str(item.tool) ?? str(item.name) ?? 'mcp',
+              output: item.result,
+              presentation: presentation('mcp', str(item.name) ?? 'Used MCP tool', item.arguments),
+            });
+          }
           break;
 
         default:
-          // reasoning, mcpToolCall, plan, … — retain, don't invent semantics.
+          // plan and future item types — retain, don't invent semantics.
           if (phase === 'completed') {
             events.push({
               type: 'adapter.native-event',
@@ -191,6 +294,19 @@ export class CodexNotificationNormalizer {
         break;
       }
 
+      case 'item/reasoning/textDelta':
+      case 'item/reasoning/summaryPartAdded':
+        events.push({ type: 'reasoning.progress', reasoningId: str(p.itemId) });
+        break;
+
+      case 'item/reasoning/summaryTextDelta': {
+        const itemId = str(p.itemId) ?? 'reasoning';
+        const summary = (this.reasoningSummaries.get(itemId) ?? '') + (str(p.delta) ?? '');
+        this.reasoningSummaries.set(itemId, summary);
+        events.push({ type: 'reasoning.summary', reasoningId: itemId, text: summary, final: false });
+        break;
+      }
+
       case 'turn/completed': {
         const turn = rec(p.turn);
         const tId = str(turn?.id) ?? this.pendingTurn?.turnId;
@@ -213,7 +329,7 @@ export class CodexNotificationNormalizer {
 
       default:
         if (AMBIENT.has(method)) break; // infra / account / UI churn — not agent semantics
-        // Session-relevant but unmodeled (reasoning, token usage, sub-streams):
+        // Session-relevant but unmodeled (token usage, sub-streams):
         // retain per ADR-008 so nothing is silently dropped.
         events.push({ type: 'adapter.native-event', adapter: 'codex', nativeType: method });
         break;

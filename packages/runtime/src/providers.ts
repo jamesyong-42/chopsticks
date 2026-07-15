@@ -1,6 +1,6 @@
-import { createGrokBackend, type GrokBackend } from '@vibecook/chopsticks-adapter-acp';
 import { createClaudeSession } from '@vibecook/chopsticks-adapter-claude';
 import { createCodexTuiSession } from '@vibecook/chopsticks-adapter-codex';
+import { createGrokBackend, type GrokBackend } from '@vibecook/chopsticks-adapter-grok';
 import type { AgentProvider, BuiltinAgentKind } from './types.js';
 
 export interface BuiltinProviderOptions {

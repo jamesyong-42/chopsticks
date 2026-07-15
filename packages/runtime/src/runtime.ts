@@ -16,6 +16,7 @@ import type {
   CreateAgentSessionOptions,
   CreateAgentSessionResult,
 } from './types.js';
+import { AgentConversationProjector } from './conversation.js';
 
 interface ManagedSession {
   session: AgentSession;
@@ -23,6 +24,7 @@ interface ManagedSession {
   workspace: Workspace;
   unsubscribe: () => void;
   releaseClaim: () => void;
+  conversation: AgentConversationProjector;
 }
 
 /**
@@ -205,8 +207,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           initialCommit: workspace.initialCommit,
         },
       };
+      const conversation = new AgentConversationProjector();
       const unsubscribe = session.onEvent((envelope) => {
         if (!isCanonicalApplicationEvent(session, envelope)) return;
+        conversation.consume(envelope);
         for (const listener of listeners) {
           try {
             listener(session.runtimeSessionId, envelope);
@@ -215,13 +219,14 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           }
         }
       });
-      sessions.set(session.runtimeSessionId, { session, info, workspace, unsubscribe, releaseClaim });
+      sessions.set(session.runtimeSessionId, { session, info, workspace, unsubscribe, releaseClaim, conversation });
       return info;
     },
 
     sessionInfo: (id) => sessions.get(id)?.info,
     sessionState: (id) => sessions.get(id)?.session.state(),
     observationLevel: (id) => sessions.get(id)?.session.observationLevel(),
+    conversationSnapshot: (id) => sessions.get(id)?.conversation.snapshot(),
 
     onEvent(listener) {
       listeners.add(listener);

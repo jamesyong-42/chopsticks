@@ -124,6 +124,45 @@ describe('CodexNotificationNormalizer', () => {
     expect(completed.userMessageClientId).toBe('inj-42');
   });
 
+  it('maps reasoning presence and user-displayable summaries without copying raw thought text', () => {
+    const n = new CodexNotificationNormalizer();
+    const events = [
+      ...n.normalize({
+        method: 'item/started',
+        params: { threadId: THREAD, turnId: TURN, item: { type: 'reasoning', id: 'r1', summary: [] } },
+      }).events,
+      ...n.normalize({
+        method: 'item/reasoning/textDelta',
+        params: { threadId: THREAD, turnId: TURN, itemId: 'r1', delta: 'private thought text' },
+      }).events,
+      ...n.normalize({
+        method: 'item/reasoning/summaryTextDelta',
+        params: { threadId: THREAD, turnId: TURN, itemId: 'r1', delta: 'Checked both approaches.' },
+      }).events,
+      ...n.normalize({
+        method: 'item/completed',
+        params: {
+          threadId: THREAD,
+          turnId: TURN,
+          item: {
+            type: 'reasoning',
+            id: 'r1',
+            content: ['private thought text'],
+            summary: ['Checked both approaches.'],
+          },
+        },
+      }).events,
+    ];
+
+    expect(events).toEqual([
+      { type: 'reasoning.started', reasoningId: 'r1' },
+      { type: 'reasoning.progress', reasoningId: 'r1' },
+      { type: 'reasoning.summary', reasoningId: 'r1', text: 'Checked both approaches.', final: false },
+      { type: 'reasoning.completed', reasoningId: 'r1' },
+    ]);
+    expect(JSON.stringify(events)).not.toContain('private thought text');
+  });
+
   it('a failed turn normalizes to turn.failed with the error', () => {
     const n = new CodexNotificationNormalizer();
     n.normalize(CAPTURE[2]!); // turn/started

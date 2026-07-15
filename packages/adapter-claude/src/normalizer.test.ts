@@ -61,6 +61,29 @@ describe('ClaudeHookNormalizer against captured fixtures', () => {
     });
   });
 
+  it('classifies native tool names into provider-neutral UI presentations', () => {
+    const command = normalizeOne(
+      fakeClaudeHookPayload('PreToolUse', {
+        tool_name: 'Bash',
+        tool_use_id: 'tool-command',
+        tool_input: { command: 'pnpm test' },
+      }) as ClaudeHookPayload,
+    );
+    const search = normalizeOne(
+      fakeClaudeHookPayload('PreToolUse', {
+        tool_name: 'WebSearch',
+        tool_use_id: 'tool-search',
+        tool_input: { query: 'ACP protocol' },
+      }) as ClaudeHookPayload,
+    );
+    expect(command.events.at(-1)).toMatchObject({
+      presentation: { kind: 'command', title: 'Running command', detail: 'pnpm test' },
+    });
+    expect(search.events.at(-1)).toMatchObject({
+      presentation: { kind: 'web-search', title: 'Searching the web', detail: 'ACP protocol' },
+    });
+  });
+
   it('surfaces MessageDisplay turn_id for envelope stamping', () => {
     const [display] = loadHookFixtures('MessageDisplay');
     const result = normalizeOne(display as ClaudeHookPayload);

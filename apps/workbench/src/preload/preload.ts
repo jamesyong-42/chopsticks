@@ -8,7 +8,6 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
-  AgentEventMessage,
   AgentStateMessage,
   ChopsticksBridge,
   ChunkEvent,
@@ -48,11 +47,6 @@ const bridge: ChopsticksBridge = {
     ipcRenderer.invoke('chopsticks:createAgentSession', opts),
   submitPrompt: (opts: SubmitPromptOptions): Promise<PromptReceipt> =>
     ipcRenderer.invoke('chopsticks:submitPrompt', opts),
-  onAgentEvents: (cb: (events: AgentEventMessage[]) => void): (() => void) => {
-    const listener = (_e: unknown, events: AgentEventMessage[]): void => cb(events);
-    ipcRenderer.on('chopsticks:agentEvents', listener);
-    return () => ipcRenderer.removeListener('chopsticks:agentEvents', listener);
-  },
   onAgentState: (cb: (state: AgentStateMessage) => void): (() => void) => {
     const listener = (_e: unknown, state: AgentStateMessage): void => cb(state);
     ipcRenderer.on('chopsticks:agentState', listener);
