@@ -303,6 +303,12 @@ body,
   --line-strong: rgba(255, 255, 255, 0.24);
   --invert-bg: #ececec;
   --invert-fg: #0b0b0c;
+  /* Semantic accents — the ONLY color in the panel, reserved for critical
+   * state signals (dots, tool status, errors). GitHub-dark hues; legible on
+   * near-black. Separate from any brand accent (there is none). */
+  --ok: #3fb950;
+  --warn: #e3b341;
+  --bad: #f85149;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
 
   width: 380px;
@@ -360,13 +366,17 @@ body,
   background: transparent;
 }
 .status-dot[data-tone='ready'] {
-  background: var(--text);
-  border-color: var(--text);
+  background: var(--ok);
+  border-color: var(--ok);
 }
 .status-dot[data-tone='working'] {
-  background: var(--text);
-  border-color: var(--text);
+  background: var(--warn);
+  border-color: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
+}
+.status-dot[data-tone='failed'] {
+  background: var(--bad);
+  border-color: var(--bad);
 }
 .status-dot[data-tone='exited'] {
   background: transparent;
@@ -412,10 +422,10 @@ body,
   margin: 10px 14px 0;
   padding: 8px 11px;
   border-radius: 6px;
-  background: var(--invert-bg);
-  color: var(--invert-fg);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+  color: var(--warn);
   font-size: 11.5px;
-  font-weight: 500;
 }
 .perms-banner.hidden {
   display: none;
@@ -591,15 +601,15 @@ body,
   color: var(--faint);
 }
 .tool-chip.running .tool-ic {
-  color: var(--text);
+  color: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
 }
 .tool-chip.done .tool-ic {
-  color: var(--text);
+  color: var(--ok);
 }
 .tool-chip.failed {
   border-style: dashed;
-  border-color: var(--line-strong);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
 }
 .tool-chip.failed .tool-nm {
   color: var(--dim);
@@ -607,7 +617,7 @@ body,
   text-decoration-color: var(--faint);
 }
 .tool-chip.failed .tool-ic {
-  color: var(--text);
+  color: var(--bad);
 }
 
 .stream-cursor {
@@ -630,7 +640,7 @@ body,
   font-style: italic;
 }
 .msg.note.error .msg-note {
-  color: var(--text);
+  color: var(--bad);
   font-style: normal;
 }
 
@@ -679,13 +689,11 @@ body,
   color: var(--dim);
 }
 .composer-receipt.confirmed {
-  color: var(--text);
+  color: var(--ok);
 }
 .composer-receipt.rejected,
 .composer-receipt.uncertain {
-  color: var(--text);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  color: var(--bad);
 }
 .composer-send {
   font-family: var(--mono);

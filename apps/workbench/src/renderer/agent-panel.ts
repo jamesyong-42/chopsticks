@@ -302,8 +302,11 @@ export class AgentPanel {
       const secs = Math.max(0, Math.round((Date.now() - this.activeTurnStartedAt!) / 1000));
       label = `working · ${secs}s`;
       tone = 'working';
-    } else if (this.lifecycle === 'exited' || this.lifecycle === 'failed' || this.exited) {
-      label = this.lifecycle === 'failed' ? 'failed' : 'exited';
+    } else if (this.lifecycle === 'failed') {
+      label = 'failed';
+      tone = 'failed';
+    } else if (this.lifecycle === 'exited' || this.exited) {
+      label = 'exited';
       tone = 'exited';
     } else if (this.lifecycle === 'ready') {
       label = 'ready';
