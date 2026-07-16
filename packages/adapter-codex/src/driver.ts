@@ -14,7 +14,7 @@
  * There is NO PTY here: the structured driver observes and drives via the
  * protocol. `observationLevel()` is honestly `'structured'`. Hosting the native
  * TUI beside it (via `codex --remote`) is the workbench's job (C6);
- * `notifyUserInput()` is the seam that wiring will use.
+ * Native-TUI automation is owned by the host's ordered semantic input path.
  */
 
 import { performance } from 'node:perf_hooks';
@@ -194,9 +194,6 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
       } catch (err) {
         return { status: 'rejected', reason: err instanceof Error ? err.message : String(err) };
       }
-    },
-    notifyUserInput() {
-      /* no PTY in the structured driver; the native-TUI attach (C6) wires this */
     },
     async dispose() {
       client.close();

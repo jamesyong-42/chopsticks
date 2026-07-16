@@ -1,19 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!--
-      CSP notes for restty (libghostty-vt), matching avocado/apps/ghostty:
-      - script-src 'wasm-unsafe-eval' allows WebAssembly.instantiate
-      - font-src 'self' data: avocado bundles JetBrains Mono
-      - file: allows Electron file:// font fetch under dist/fonts
-    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: file:; connect-src 'self' file:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'"
     />
-    <title>chopsticks</title>
+    <title>Chopsticks</title>
     <link rel="stylesheet" href="./renderer.css" />
   </head>
   <body>

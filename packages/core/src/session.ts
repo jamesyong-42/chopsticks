@@ -55,8 +55,6 @@ export interface AgentSession {
   observationLevel(): ObservationLevel;
   onEvent(listener: (envelope: AgentEventEnvelope) => void): () => void;
   submitPrompt(submission: PromptSubmission): Promise<PromptReceipt>;
-  /** Human keystroke on the terminal input path — user priority over injection. */
-  notifyUserInput(): void;
   /** Tear down observation/control. Process lifecycle stays with the host. */
   dispose(): Promise<void>;
 }

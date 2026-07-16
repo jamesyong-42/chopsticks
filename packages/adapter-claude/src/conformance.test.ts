@@ -16,7 +16,7 @@ async function claudeHarness(): Promise<AgentSessionHarness> {
         prepared = p;
         return { runtimeSessionId: 'rt-conformance' };
       },
-      write: () => undefined,
+      automate: async () => ({ accepted: true }),
     },
   });
 

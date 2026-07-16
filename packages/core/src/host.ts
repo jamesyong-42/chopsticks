@@ -6,7 +6,7 @@
  * point, and it is what lets the Codex app-server + `codex --remote` and the
  * Grok leader + `grok --leader` recipes move out of the app and into their
  * adapters (ADR-007: process lifecycle belongs to the host; the adapter only
- * asks the host to spawn/write, and observes/controls the result).
+ * asks the host to spawn/automate, and observes/controls the result).
  */
 
 /** A native terminal (PTY) the host should spawn on the adapter's behalf. */
@@ -26,14 +26,21 @@ export interface TerminalSpec {
  * spawn a terminal and write raw bytes to one. Everything else (transcripts,
  * app-servers, leaders, sockets) the adapter builds itself.
  */
+export type TerminalAutomationOperation =
+  { kind: 'paste'; text: string; submit: boolean } | { kind: 'text'; text: string } | { kind: 'interrupt' };
+
+export type TerminalAutomationResult =
+  { accepted: true } | { accepted: false; reason: 'human-input-conflict' | string };
+
 export interface AgentHost {
   /** Spawn a native terminal for the agent; returns the host's routing id. */
   spawnTerminal(spec: TerminalSpec): Promise<{ runtimeSessionId: string }>;
   /**
-   * Write bytes straight to a terminal, bypassing the human-input path so an
-   * injected paste is never mistaken for a user keystroke (DESIGN §17.2).
+   * Submit one semantic automation operation. The terminal service orders it
+   * atomically against accepted human input without attaching a view, taking
+   * focus, or claiming resize control.
    */
-  writeTerminal(runtimeSessionId: string, data: string): void;
+  automateTerminal(runtimeSessionId: string, operation: TerminalAutomationOperation): Promise<TerminalAutomationResult>;
 }
 
 /**

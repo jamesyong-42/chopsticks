@@ -53,7 +53,7 @@ describe('captured hook fixtures (Phase 0)', () => {
   });
 });
 
-// Interactive-only events (M1): captured by driving a real TUI via node-pty
+// Interactive-only events (M1): captured by driving a real native TUI
 // (packages/node/scripts/interactive-census.mjs); these never fire in headless
 // `-p` mode. Shapes documented in draft/HOOK-SURFACE-FINDINGS.md §3.
 describe('interactive-only hook fixtures (M1)', () => {

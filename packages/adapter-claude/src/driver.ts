@@ -7,12 +7,12 @@
  * ports:
  *
  *   prepare (settings + UUID join contract)
- *     → ports.spawn (avocado requestSpawn carries the hook token in env)
+ *     → ports.spawn (the host carries the hook token in its explicit env grant)
  *     → hook bridge (loopback HTTP; the ONLY session it accepts is ours)
  *     → normalizer → envelope stamping → session reducer state
  *     → transcript observer (lazy: created at the first hook envelope, whose
  *       payload hands us transcript_path; every envelope pokes poll())
- *     → prompt injector (writes through ports.write; confirmation and
+ *     → prompt injector (uses ports.automate; confirmation and
  *       permission gating wired from the normalized event stream)
  *
  * Observation level (DESIGN §19.2) is reported honestly: 'terminal-only'
@@ -29,6 +29,8 @@ import {
   type AgentEventEnvelope,
   type AgentSession,
   type ObservationLevel,
+  type TerminalAutomationOperation,
+  type TerminalAutomationResult,
 } from '@vibecook/chopsticks-core';
 import { createHookBridge, type HookBridge } from './hook-bridge.js';
 import { ClaudeHookNormalizer, type ClaudeHookPayload } from './normalizer.js';
@@ -41,8 +43,8 @@ const TOKEN_ENV_VAR = 'CHOPSTICKS_HOOK_TOKEN';
 export interface ClaudeSessionPorts {
   /** Spawn the prepared command; resolves with the host's session id for writes. */
   spawn(prepared: PreparedClaudeSession): Promise<{ runtimeSessionId: string }>;
-  /** Raw terminal input for the session (the injector's write path). */
-  write(runtimeSessionId: string, data: string): void;
+  /** Ordered semantic automation; never attaches a view or claims layout. */
+  automate(runtimeSessionId: string, operation: TerminalAutomationOperation): Promise<TerminalAutomationResult>;
 }
 
 export interface CreateClaudeSessionOptions {
@@ -112,7 +114,7 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
   const eventListeners = new Set<(e: AgentEventEnvelope) => void>();
 
   const injector: PromptInjector = createPromptInjector({
-    write: (data) => options.ports.write(runtimeSessionId, data),
+    automate: (operation) => options.ports.automate(runtimeSessionId, operation),
   });
 
   function apply(
@@ -210,7 +212,6 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
       return () => eventListeners.delete(listener);
     },
     submitPrompt: (submission) => injector.submit(submission),
-    notifyUserInput: () => injector.notifyUserInput(),
     pollTranscript: async () => {
       await observer?.notifyActivity();
     },

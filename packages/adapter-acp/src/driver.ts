@@ -274,9 +274,6 @@ export async function createAcpSession(options: CreateAcpSessionOptions): Promis
       // ACP injection is structured and atomic — deterministic confirmation.
       return { status: 'confirmed', turnId };
     },
-    notifyUserInput() {
-      /* no PTY in the structured driver; the native-TUI attach (A6) wires this */
-    },
     async dispose() {
       if (disposed) return;
       disposed = true;

@@ -96,7 +96,6 @@ export interface AgentRuntime {
   conversationSnapshot(runtimeSessionId: string): AgentConversationSnapshot | undefined;
   onEvent(listener: (runtimeSessionId: string, envelope: AgentEventEnvelope) => void): () => void;
   submitPrompt(runtimeSessionId: string, submission: PromptSubmission): Promise<PromptReceipt>;
-  notifyUserInput(runtimeSessionId: string): void;
   workspaceDiff(runtimeSessionId: string): Promise<WorkspaceDiff | null>;
   handleProcessExit(runtimeSessionId: string, exit: AgentProcessExit): Promise<AgentWorkspaceFinal | undefined>;
   dispose(): Promise<AgentWorkspaceFinal[]>;

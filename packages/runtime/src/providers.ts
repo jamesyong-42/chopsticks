@@ -31,7 +31,7 @@ export function createBuiltinProviders(options: BuiltinProviderOptions = {}): Ag
           executable: resolved.claude,
           ports: {
             spawn: (prepared) => host.spawnTerminal(prepared),
-            write: host.writeTerminal,
+            automate: host.automateTerminal,
           },
         }),
     },

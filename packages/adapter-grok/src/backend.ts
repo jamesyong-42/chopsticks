@@ -111,9 +111,6 @@ export function createPendingControlSession(
       if (!acp) return { status: 'rejected', reason: 'grok control client not attached' };
       return acp.submitPrompt(submission);
     },
-    notifyUserInput() {
-      /* the user drives the native TUI directly */
-    },
     async dispose() {
       if (disposed) return;
       disposed = true;

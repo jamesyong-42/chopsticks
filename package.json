@@ -7,7 +7,6 @@
   "license": "MIT",
   "author": "James Yong",
   "scripts": {
-    "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm typecheck && pnpm -r test",
@@ -18,7 +17,17 @@
     "node": ">=20"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["node-pty", "electron", "esbuild"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ],
+    "overrides": {
+      "@vibecook/ghosttea": "link:../../electron-ghostty/packages/terminal-client",
+      "@vibecook/ghosttea-electron": "link:../../electron-ghostty/packages/terminal-electron",
+      "@vibecook/ghosttea-frame": "link:../../electron-ghostty/packages/terminal-frame",
+      "@vibecook/ghosttea-protocol": "link:../../electron-ghostty/packages/terminal-protocol",
+      "@vibecook/ghosttea-react": "link:../../electron-ghostty/packages/terminal-react"
+    }
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,17 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { createPromptInjector, type PromptReceipt } from './prompt.js';
+import type { TerminalAutomationOperation } from '@vibecook/chopsticks-core';
 
-function harness(defaults?: { defaultConfirmationTimeoutMs?: number }) {
-  const written: string[] = [];
-  const injector = createPromptInjector({ write: (d) => written.push(d), ...defaults });
-  return { written, injector };
+function harness(defaults?: { defaultConfirmationTimeoutMs?: number; accepted?: boolean }) {
+  const operations: TerminalAutomationOperation[] = [];
+  const injector = createPromptInjector({
+    automate: async (operation) => {
+      operations.push(operation);
+      return defaults?.accepted === false ? { accepted: false, reason: 'human-input-conflict' } : { accepted: true };
+    },
+    defaultConfirmationTimeoutMs: defaults?.defaultConfirmationTimeoutMs,
+  });
+  return { operations, injector };
 }
 
 describe('createPromptInjector', () => {
-  it('wraps the prompt in bracketed paste and submits with Enter', async () => {
-    const { written, injector } = harness();
+  it('submits one atomic semantic paste-and-submit operation', async () => {
+    const { operations, injector } = harness();
     const receiptPromise = injector.submit({ text: 'run the tests' });
-    expect(written).toEqual(['\x1b[200~run the tests\x1b[201~', '\r']);
+    expect(operations).toEqual([{ kind: 'paste', text: 'run the tests', submit: true }]);
 
     injector.handleTurnStarted('prompt-1', 'run the tests');
     expect(await receiptPromise).toEqual({ status: 'confirmed', turnId: 'prompt-1' });
@@ -30,9 +37,9 @@ describe('createPromptInjector', () => {
   });
 
   it('normalizes line endings for matching but preserves inner newlines', async () => {
-    const { written, injector } = harness();
+    const { operations, injector } = harness();
     const receiptPromise = injector.submit({ text: 'line one\r\nline two\n' });
-    expect(written[0]).toBe('\x1b[200~line one\nline two\x1b[201~');
+    expect(operations[0]).toEqual({ kind: 'paste', text: 'line one\nline two', submit: true });
 
     injector.handleTurnStarted('p', 'line one\nline two');
     expect((await receiptPromise).status).toBe('confirmed');
@@ -48,10 +55,10 @@ describe('createPromptInjector', () => {
   });
 
   it('rejects while a native permission dialog is pending', async () => {
-    const { written, injector } = harness();
+    const { operations, injector } = harness();
     injector.setPermissionPending(true);
     expect((await injector.submit({ text: 'blocked' })).status).toBe('rejected');
-    expect(written).toHaveLength(0);
+    expect(operations).toHaveLength(0);
 
     injector.setPermissionPending(false);
     const receipt = injector.submit({ text: 'now ok' });
@@ -59,27 +66,24 @@ describe('createPromptInjector', () => {
     expect((await receipt).status).toBe('confirmed');
   });
 
-  it('user input during confirmation resolves uncertain (user has priority)', async () => {
-    const { injector } = harness();
-    const receiptPromise = injector.submit({ text: 'automation prompt' });
-    injector.notifyUserInput();
-    const receipt = await receiptPromise;
-    expect(receipt.status).toBe('uncertain');
-    expect((receipt as { reason: string }).reason).toContain('user took control');
+  it('rejects when accepted human input won the daemon ordering race', async () => {
+    const { injector } = harness({ accepted: false });
+    const receipt = await injector.submit({ text: 'automation prompt' });
+    expect(receipt).toEqual({ status: 'rejected', reason: 'human-input-conflict' });
     expect(injector.isActive()).toBe(false);
   });
 
   it('paste-only stages without Enter and confirms immediately', async () => {
-    const { written, injector } = harness();
+    const { operations, injector } = harness();
     const receipt = await injector.submit({ text: 'staged', mode: 'paste-only' });
     expect(receipt.status).toBe('confirmed');
-    expect(written).toEqual(['\x1b[200~staged\x1b[201~']);
+    expect(operations).toEqual([{ kind: 'paste', text: 'staged', submit: false }]);
   });
 
   it('rejects empty prompts before touching the terminal', async () => {
-    const { written, injector } = harness();
+    const { operations, injector } = harness();
     expect((await injector.submit({ text: '\n' })).status).toBe('rejected');
-    expect(written).toHaveLength(0);
+    expect(operations).toHaveLength(0);
   });
 
   it('times out as uncertain, never as a false confirmation', async () => {

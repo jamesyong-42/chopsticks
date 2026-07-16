@@ -249,10 +249,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       return receipt;
     },
 
-    notifyUserInput(runtimeSessionId) {
-      sessions.get(runtimeSessionId)?.session.notifyUserInput();
-    },
-
     async workspaceDiff(runtimeSessionId) {
       return (await sessions.get(runtimeSessionId)?.workspace.diff()) ?? null;
     },

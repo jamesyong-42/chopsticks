@@ -17,7 +17,6 @@ function fakeControl() {
       return () => listeners.delete(listener);
     },
     submitPrompt: async () => ({ status: 'confirmed', turnId: 't1' }),
-    notifyUserInput: () => undefined,
     dispose: async () => {
       disposed = true;
     },

@@ -113,13 +113,12 @@ export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions):
     threadPath: () => observer.threadPath(),
     onEvent: (listener: (e: AgentEventEnvelope) => void) => observer.onEvent(listener),
     async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
-      // Bracketed-paste into the native TUI, then Enter. A direct host write (not
-      // the human-input path), so it is never mistaken for a keystroke.
-      host.writeTerminal(runtimeSessionId, `\x1b[200~${submission.text}\x1b[201~\r`);
-      return { status: 'confirmed' };
-    },
-    notifyUserInput() {
-      /* the user drives the native TUI directly; nothing to arbitrate here */
+      const result = await host.automateTerminal(runtimeSessionId, {
+        kind: 'paste',
+        text: submission.text,
+        submit: submission.mode !== 'paste-only',
+      });
+      return result.accepted ? { status: 'confirmed' } : { status: 'rejected', reason: result.reason };
     },
     async dispose() {
       if (disposed) return;

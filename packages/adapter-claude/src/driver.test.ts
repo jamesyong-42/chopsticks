@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
+import type { AgentEventEnvelope, TerminalAutomationOperation } from '@vibecook/chopsticks-core';
 import { createClaudeSession, type ClaudeSession } from './driver.js';
 import type { PreparedClaudeSession } from './prepare.js';
 
@@ -22,7 +22,7 @@ afterEach(async () => {
 
 async function startSession() {
   let prepared: PreparedClaudeSession | undefined;
-  const writes: string[] = [];
+  const automations: TerminalAutomationOperation[] = [];
   const session = await createClaudeSession({
     cwd: '/tmp',
     title: 'driver-test',
@@ -31,9 +31,10 @@ async function startSession() {
         prepared = p;
         return { runtimeSessionId: 'rt-1' };
       },
-      write: (id, data) => {
+      automate: async (id, operation) => {
         expect(id).toBe('rt-1');
-        writes.push(data);
+        automations.push(operation);
+        return { accepted: true };
       },
     },
   });
@@ -63,7 +64,7 @@ async function startSession() {
     expect(res.status).toBe(200);
   };
 
-  return { session, prepared: prepared!, writes, events, hook };
+  return { session, prepared: prepared!, automations, events, hook };
 }
 
 describe('createClaudeSession (full loop, test-as-Claude)', () => {
@@ -105,12 +106,11 @@ describe('createClaudeSession (full loop, test-as-Claude)', () => {
   });
 
   it('confirms injected prompts through the real bridge round-trip', async () => {
-    const { session, writes, hook } = await startSession();
+    const { session, automations, hook } = await startSession();
     await hook('SessionStart', {});
 
     const receiptPromise = session.submitPrompt({ text: 'injected task' });
-    expect(writes[0]).toBe('\x1b[200~injected task\x1b[201~');
-    expect(writes[1]).toBe('\r');
+    expect(automations).toEqual([{ kind: 'paste', text: 'injected task', submit: true }]);
 
     await hook('UserPromptSubmit', { prompt: 'injected task', prompt_id: 'p-9' });
     expect(await receiptPromise).toEqual({ status: 'confirmed', turnId: 'p-9' });
@@ -195,7 +195,7 @@ describe('createClaudeSession (full loop, test-as-Claude)', () => {
           prepared = p;
           return { runtimeSessionId: 'rt-resume' };
         },
-        write: () => undefined,
+        automate: async () => ({ accepted: true }),
       },
     });
     sessions.push(session);

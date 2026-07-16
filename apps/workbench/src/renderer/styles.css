@@ -1,7 +1,122 @@
-/* Ghostty-parity chrome (from avocado/apps/ghostty) + chopsticks activity panel.
- *
- * Terminal colors come from the restty engine (Ghostty Default Style Dark);
- * this file only styles the window chrome around the surfaces. */
+/* Chopsticks-only agent controls. Ghosttea owns all terminal and window chrome. */
+
+.ghosttea-workspace-sidebar {
+  flex-basis: 390px;
+  min-width: 320px;
+}
+
+.agent-sidebar {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b0b0c;
+}
+
+.agent-launcher {
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+  color: #ececec;
+  font:
+    11px ui-monospace,
+    'SF Mono',
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.agent-launcher-row,
+.agent-launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-launcher-row label {
+  color: #8b8b90;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.agent-launcher select,
+.agent-launcher button,
+.agent-session-list button {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  color: #d9d9da;
+  background: transparent;
+  font: inherit;
+}
+
+.agent-launcher select {
+  min-width: 0;
+  flex: 1;
+  padding: 5px 8px;
+}
+
+.agent-launch-actions {
+  margin-top: 9px;
+}
+
+.agent-launcher button {
+  flex: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.agent-launcher button:hover:not(:disabled),
+.agent-session-list button:hover {
+  border-color: rgba(255, 255, 255, 0.38);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.agent-launcher button:disabled {
+  opacity: 0.48;
+}
+
+.agent-launch-error {
+  margin-top: 8px;
+  color: #f85149;
+  line-height: 1.4;
+}
+
+.agent-empty {
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: #77777d;
+  font:
+    12px/1.5 ui-monospace,
+    'SF Mono',
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-align: center;
+}
+
+.agent-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-session-list button {
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.agent-sidebar #activity {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 
 :root {
   --bg: #282c34; /* Ghostty Default Style Dark background */
@@ -273,7 +388,8 @@ body,
   pointer-events: none;
 }
 
-/* ── Engine fill (restty canvas inside the headless surface host) ───── */
+/* Legacy selectors below are intentionally inert while the panel styles are
+ * split from the former workbench stylesheet. Ghosttea owns the terminal. */
 
 [data-terminal-host] .restty-pane,
 [data-terminal-host] .pane,

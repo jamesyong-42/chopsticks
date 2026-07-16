@@ -18,7 +18,9 @@ const host: AgentHost = {
   async spawnTerminal() {
     throw new Error('fake providers do not spawn');
   },
-  writeTerminal() {},
+  async automateTerminal() {
+    return { accepted: true };
+  },
 };
 
 const execFileAsync = promisify(execFile);
@@ -35,7 +37,7 @@ async function makeRepo(): Promise<string> {
 
 function fakeProvider(
   kind: string,
-  handles: Map<string, { emit: (event: AgentEventEnvelope) => void; input: number[] }>,
+  handles: Map<string, { emit: (event: AgentEventEnvelope) => void }>,
 ): AgentProvider {
   let counter = 0;
   return {
@@ -44,10 +46,8 @@ function fakeProvider(
       const n = ++counter;
       const runtimeSessionId = `${kind}-runtime-${n}`;
       const listeners = new Set<(event: AgentEventEnvelope) => void>();
-      const input: number[] = [];
       handles.set(runtimeSessionId, {
         emit: (event) => listeners.forEach((listener) => listener(event)),
-        input,
       });
       return {
         sessionId: `${kind}-native-${n}`,
@@ -61,9 +61,6 @@ function fakeProvider(
         async submitPrompt() {
           return { status: 'confirmed', turnId: `${kind}-turn` };
         },
-        notifyUserInput() {
-          input.push(1);
-        },
         async dispose() {},
       };
     },
@@ -76,7 +73,7 @@ describe('createAgentRuntime', () => {
     const one = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-one-'));
     const two = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-two-'));
     const recorder = createActionRecorder({ path: join(root, 'actions.jsonl') });
-    const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void; input: number[] }>();
+    const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void }>();
     const runtime = createAgentRuntime({
       host,
       defaultCwd: root,
@@ -147,9 +144,6 @@ describe('createAgentRuntime', () => {
       status: 'confirmed',
       turnId: 'two-turn',
     });
-    runtime.notifyUserInput(second.runtimeSessionId);
-    expect(handles.get(second.runtimeSessionId)!.input).toHaveLength(1);
-
     const final = await runtime.handleProcessExit(second.runtimeSessionId, {
       exitCode: 0,
       signal: null,
@@ -171,7 +165,7 @@ describe('createAgentRuntime', () => {
     const roots = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-worktrees-'));
     const nested = join(root, 'nested');
     await mkdir(nested);
-    const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void; input: number[] }>();
+    const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void }>();
     const runtime = createAgentRuntime({
       host,
       defaultCwd: root,
