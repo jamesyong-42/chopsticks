@@ -40,6 +40,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
 
+      - name: Load current release tooling for retry
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: git restore --source "${GITHUB_SHA}" -- scripts/publish-packages.mjs
+
       - uses: pnpm/action-setup@v6
         with:
           # pnpm 10.34 includes npm trusted-publishing support when setup-node
