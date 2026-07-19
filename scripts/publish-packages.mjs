@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { publicPackages } from './public-packages.mjs';
@@ -8,6 +10,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const rootManifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
 const version = rootManifest.version;
 const expectedTag = `v${version}`;
+const publicPackageNames = new Set(publicPackages.map(([, packageName]) => packageName));
 const releaseToolingFiles = new Set([
   'scripts/publish-errors.mjs',
   'scripts/publish-errors.test.mjs',
@@ -73,6 +76,35 @@ async function waitForPublished(packageName) {
   return false;
 }
 
+function validatePackedManifest(tarballPath, expectedName) {
+  const packedManifest = JSON.parse(
+    execFileSync('tar', ['-xOf', tarballPath, 'package/package.json'], {
+      cwd: root,
+      encoding: 'utf8',
+    }),
+  );
+
+  if (packedManifest.name !== expectedName || packedManifest.version !== version) {
+    throw new Error(
+      `packed tarball must be ${expectedName}@${version}; found ${packedManifest.name}@${packedManifest.version}`,
+    );
+  }
+
+  for (const dependencyField of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const [dependencyName, dependencyVersion] of Object.entries(packedManifest[dependencyField] ?? {})) {
+      if (typeof dependencyVersion === 'string' && dependencyVersion.startsWith('workspace:')) {
+        throw new Error(`${expectedName} tarball still contains ${dependencyName}: ${dependencyVersion}`);
+      }
+
+      if (publicPackageNames.has(dependencyName) && dependencyVersion !== version) {
+        throw new Error(
+          `${expectedName} tarball must depend on ${dependencyName}@${version}; found ${dependencyVersion}`,
+        );
+      }
+    }
+  }
+}
+
 for (const [directory, expectedName] of publicPackages) {
   const manifest = JSON.parse(readFileSync(`${root}/${directory}/package.json`, 'utf8'));
 
@@ -85,10 +117,34 @@ for (const [directory, expectedName] of publicPackages) {
     continue;
   }
 
-  const result = spawnSync('npm', ['publish', '--access', 'public'], {
-    cwd: `${root}/${directory}`,
-    stdio: 'inherit',
-  });
+  const packDirectory = mkdtempSync(join(tmpdir(), 'chopsticks-publish-'));
+  let result;
+
+  try {
+    const packResult = spawnSync('pnpm', ['--dir', directory, 'pack', '--pack-destination', packDirectory], {
+      cwd: root,
+      stdio: 'inherit',
+    });
+
+    if (packResult.status !== 0) {
+      throw new Error(`${expectedName}@${version} pack returned ${packResult.status ?? 'no status'}`);
+    }
+
+    const tarballs = readdirSync(packDirectory).filter((file) => file.endsWith('.tgz'));
+    if (tarballs.length !== 1) {
+      throw new Error(`expected one packed tarball for ${expectedName}; found ${tarballs.length}`);
+    }
+
+    const tarballPath = join(packDirectory, tarballs[0]);
+    validatePackedManifest(tarballPath, expectedName);
+
+    result = spawnSync('npm', ['publish', tarballPath, '--access', 'public'], {
+      cwd: root,
+      stdio: 'inherit',
+    });
+  } finally {
+    rmSync(packDirectory, { recursive: true, force: true });
+  }
 
   if (result.status !== 0) {
     console.log(
