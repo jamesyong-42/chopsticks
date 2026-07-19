@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Unified Chopsticks agent runtime: provider registry, session lifecycle, workspace isolation, events, and action recording.",
   "license": "MIT",

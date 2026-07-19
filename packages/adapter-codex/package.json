@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-adapter-codex",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Codex native adapter: app-server (JSON-RPC) structured driver — notification normalizer, session driver, structured injection.",
   "license": "MIT",
