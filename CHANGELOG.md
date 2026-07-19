@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.2](https://github.com/jamesyong-42/chopsticks/compare/v0.1.1...v0.1.2) (2026-07-19)
+
+
+### Bug Fixes
+
+* align release tags with publish guard ([8ae50ac](https://github.com/jamesyong-42/chopsticks/commit/8ae50acd81ca38a5e0f0b9bb5a0d91094f3a1c0c))
+* load current tooling for release retries ([38fead0](https://github.com/jamesyong-42/chopsticks/commit/38fead09868ea1547363b1c232898ec2bba5798e))
+* publish packages with oidc-capable npm ([e2fa39c](https://github.com/jamesyong-42/chopsticks/commit/e2fa39c58c8140da04393e53e789792c9bb7cff1))
+* publish rewritten workspace tarballs ([83f4094](https://github.com/jamesyong-42/chopsticks/commit/83f409416d9fe1154ca6b3917a4103d074b4da5f))
+* use OIDC-capable npm for releases ([30541d8](https://github.com/jamesyong-42/chopsticks/commit/30541d854ec6e56a3b53c81f59d6d70110a35608))
+
 ## [0.1.1](https://github.com/jamesyong-42/chopsticks/compare/chopsticks-v0.1.0...chopsticks-v0.1.1) (2026-07-19)
 
 

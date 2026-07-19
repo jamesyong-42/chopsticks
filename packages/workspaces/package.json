@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-workspaces",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Workspace modes for chopsticks sessions: direct, exclusive, git-worktree, and copy providers with final metadata.",
   "license": "MIT",

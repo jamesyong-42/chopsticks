@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-testing",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Test harness for the chopsticks runtime: fake terminal agent, captured hook fixtures, synthetic hook payloads.",
   "license": "MIT",
