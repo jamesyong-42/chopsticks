@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-adapter-acp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Generic Agent Client Protocol (ACP) adapter: transport connectors, session/update normalization, lifecycle, permissions, and deterministic prompt injection.",
   "license": "MIT",

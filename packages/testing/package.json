@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-testing",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Test harness for the chopsticks runtime: fake terminal agent, captured hook fixtures, synthetic hook payloads.",
   "license": "MIT",
@@ -32,7 +32,11 @@
       }
     }
   },
-  "files": ["dist", "bin", "fixtures"],
+  "files": [
+    "dist",
+    "bin",
+    "fixtures"
+  ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm clean && tsc -p tsconfig.build.json",
