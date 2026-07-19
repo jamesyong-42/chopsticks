@@ -19,7 +19,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
     steps:
       - id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -31,21 +31,21 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           # pnpm 10.34 includes npm trusted-publishing support when setup-node
           # creates an auth-token placeholder without NODE_AUTH_TOKEN.
           version: 10.34.5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Require a version-matching release tag
         run: |

@@ -18,7 +18,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm typecheck && pnpm -r test",
-    "pack:check": "pnpm build && pnpm -r --filter './packages/**' pack --dry-run",
+    "pack:check": "pnpm build && node scripts/pack-check.mjs",
     "release:publish": "pnpm -r --filter './packages/**' typecheck && pnpm -r --filter './packages/**' test && pnpm -r --filter './packages/**' build && node scripts/publish-packages.mjs",
     "release:trust": "node scripts/trust-packages.mjs",
     "format:check": "prettier --check 'packages/*/src/**/*.{ts,tsx}'",

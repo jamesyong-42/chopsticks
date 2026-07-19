@@ -17,13 +17,13 @@ jobs:
   packages:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
-          version: 10.20.0
+          version: 10.34.5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -36,4 +36,4 @@ jobs:
       - run: pnpm -r --filter './packages/**' typecheck
       - run: pnpm -r --filter './packages/**' test
       - run: pnpm -r --filter './packages/**' build
-      - run: pnpm -r --filter './packages/**' pack --dry-run
+      - run: node scripts/pack-check.mjs
