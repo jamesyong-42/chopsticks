@@ -1,27 +1,71 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { publicPackages } from './public-packages.mjs';
+import { isAlreadyPublishedError } from './publish-errors.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const rootManifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
 const version = rootManifest.version;
 const expectedTag = `v${version}`;
+const releaseToolingFiles = new Set([
+  'scripts/publish-errors.mjs',
+  'scripts/publish-errors.test.mjs',
+  'scripts/publish-packages.mjs',
+]);
 
-let tag;
-try {
-  tag = execFileSync('git', ['describe', '--tags', '--exact-match', 'HEAD'], {
+const tagCommit = execFileSync('git', ['rev-list', '-n', '1', expectedTag], {
+  cwd: root,
+  encoding: 'utf8',
+  stdio: ['ignore', 'pipe', 'ignore'],
+}).trim();
+const headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: root,
+  encoding: 'utf8',
+}).trim();
+
+if (tagCommit !== headCommit) {
+  execFileSync('git', ['merge-base', '--is-ancestor', expectedTag, 'HEAD'], {
+    cwd: root,
+    stdio: 'ignore',
+  });
+
+  const changedFiles = execFileSync('git', ['diff', '--name-only', `${expectedTag}..HEAD`], {
     cwd: root,
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
-} catch {
-  throw new Error(`Expected ${expectedTag} at HEAD; no exact tag found`);
+  })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  const unsafeFiles = changedFiles.filter((file) => !releaseToolingFiles.has(file));
+
+  if (unsafeFiles.length > 0) {
+    throw new Error(`${expectedTag} is not at HEAD; non-release files changed:\n${unsafeFiles.join('\n')}`);
+  }
 }
 
-if (tag !== expectedTag) {
-  throw new Error(`Expected ${expectedTag} at HEAD, found ${tag}`);
+function publish(directory) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('pnpm', ['--dir', directory, 'publish', '--access', 'public', '--no-git-checks'], {
+      cwd: root,
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+    const output = [];
+
+    child.stdout.on('data', (chunk) => {
+      output.push(Buffer.from(chunk));
+      process.stdout.write(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      output.push(Buffer.from(chunk));
+      process.stderr.write(chunk);
+    });
+    child.on('error', reject);
+    child.on('close', (status) => {
+      resolve({ status, output: Buffer.concat(output).toString('utf8') });
+    });
+  });
 }
 
 for (const [directory, expectedName] of publicPackages) {
@@ -39,15 +83,17 @@ for (const [directory, expectedName] of publicPackages) {
     console.log(`${expectedName}@${version} already published; skipping`);
     continue;
   } catch {
-    // A missing version is expected during a new or partially completed release.
+    // A missing or not-yet-visible version is expected during a partial release.
   }
 
-  const result = spawnSync('pnpm', ['--dir', directory, 'publish', '--access', 'public', '--no-git-checks'], {
-    cwd: root,
-    stdio: 'inherit',
-  });
+  const result = await publish(directory);
 
   if (result.status !== 0) {
+    if (isAlreadyPublishedError(result.output, version)) {
+      console.log(`${expectedName}@${version} was previously published; skipping`);
+      continue;
+    }
+
     process.exit(result.status ?? 1);
   }
 }
