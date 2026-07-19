@@ -1,9 +1,8 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { publicPackages } from './public-packages.mjs';
-import { isAlreadyPublishedError } from './publish-errors.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const rootManifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
@@ -45,27 +44,33 @@ if (tagCommit !== headCommit) {
   }
 }
 
-function publish(directory) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('pnpm', ['--dir', directory, 'publish', '--access', 'public', '--no-git-checks'], {
+function isPublished(packageName) {
+  try {
+    execFileSync('npm', ['view', `${packageName}@${version}`, 'version', '--registry=https://registry.npmjs.org/'], {
       cwd: root,
-      stdio: ['inherit', 'pipe', 'pipe'],
+      stdio: 'ignore',
     });
-    const output = [];
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    child.stdout.on('data', (chunk) => {
-      output.push(Buffer.from(chunk));
-      process.stdout.write(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      output.push(Buffer.from(chunk));
-      process.stderr.write(chunk);
-    });
-    child.on('error', reject);
-    child.on('close', (status) => {
-      resolve({ status, output: Buffer.concat(output).toString('utf8') });
-    });
-  });
+async function waitForPublished(packageName) {
+  const attempts = 10;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (isPublished(packageName)) {
+      return true;
+    }
+
+    if (attempt < attempts) {
+      console.log(`${packageName}@${version} is not visible yet; retrying registry check (${attempt}/${attempts})`);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+  }
+
+  return false;
 }
 
 for (const [directory, expectedName] of publicPackages) {
@@ -75,22 +80,23 @@ for (const [directory, expectedName] of publicPackages) {
     throw new Error(`${directory} must be ${expectedName}@${version}; found ${manifest.name}@${manifest.version}`);
   }
 
-  try {
-    execFileSync('npm', ['view', `${expectedName}@${version}`, 'version'], {
-      cwd: root,
-      stdio: 'ignore',
-    });
+  if (isPublished(expectedName)) {
     console.log(`${expectedName}@${version} already published; skipping`);
     continue;
-  } catch {
-    // A missing or not-yet-visible version is expected during a partial release.
   }
 
-  const result = await publish(directory);
+  const result = spawnSync('pnpm', ['--dir', directory, 'publish', '--access', 'public', '--no-git-checks'], {
+    cwd: root,
+    stdio: 'inherit',
+  });
 
   if (result.status !== 0) {
-    if (isAlreadyPublishedError(result.output, version)) {
-      console.log(`${expectedName}@${version} was previously published; skipping`);
+    console.log(
+      `${expectedName}@${version} publish returned ${result.status ?? 'no status'}; checking registry before failing`,
+    );
+
+    if (await waitForPublished(expectedName)) {
+      console.log(`${expectedName}@${version} is already published; continuing`);
       continue;
     }
 
