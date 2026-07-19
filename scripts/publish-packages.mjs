@@ -85,8 +85,8 @@ for (const [directory, expectedName] of publicPackages) {
     continue;
   }
 
-  const result = spawnSync('pnpm', ['--dir', directory, 'publish', '--access', 'public', '--no-git-checks'], {
-    cwd: root,
+  const result = spawnSync('npm', ['publish', '--access', 'public'], {
+    cwd: `${root}/${directory}`,
     stdio: 'inherit',
   });
 
