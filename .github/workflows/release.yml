@@ -3,8 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
-  # Bootstrap 0.1.0 by dispatching this workflow at an existing v0.1.0 tag.
-  # Subsequent releases are created automatically by release-please.
+  # Retry publishing an existing release by dispatching this workflow at its tag.
   workflow_dispatch:
 
 permissions:
@@ -38,7 +37,9 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.20.0
+          # pnpm 10.34 includes npm trusted-publishing support when setup-node
+          # creates an auth-token placeholder without NODE_AUTH_TOKEN.
+          version: 10.34.5
 
       - uses: actions/setup-node@v4
         with:
@@ -63,26 +64,5 @@ jobs:
 
       - name: Publish lockstep package train
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
-          for PACKAGE_DIR in \
-            packages/core \
-            packages/record \
-            packages/workspaces \
-            packages/adapter-acp \
-            packages/adapter-claude \
-            packages/adapter-codex \
-            packages/testing \
-            packages/adapter-grok \
-            packages/runtime
-          do
-            NAME=$(node -p "require('./${PACKAGE_DIR}/package.json').name")
-            if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-              echo "${NAME}@${VERSION} already published; skipping"
-            else
-              pnpm --dir "${PACKAGE_DIR}" publish --access public --no-git-checks
-            fi
-          done
+        run: node scripts/publish-packages.mjs

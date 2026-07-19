@@ -80,6 +80,19 @@ dependencies are rewritten by pnpm to that exact version in published
 tarballs. Applications should pin `@vibecook/chopsticks-runtime` exactly and
 upgrade it as a deliberate integration event.
 
-The initial `0.1.0` publication is bootstrapped by tagging the release commit
-`v0.1.0` and manually dispatching the Release workflow at that tag. Afterward,
-release-please owns release PRs, tags, and publication dispatches.
+The initial `0.1.0` publication is bootstrapped from the tagged release commit:
+
+```sh
+pnpm release:publish
+pnpm release:trust
+```
+
+`release:publish` verifies, builds, and publishes the public packages in
+dependency order, skipping versions already present in the registry.
+`release:trust` configures each package to trust `jamesyong-42/chopsticks`'s
+`release.yml` GitHub Actions workflow for `npm publish`; it requires npm 11.15
+or newer, npm account 2FA, and an authenticated interactive npm session.
+
+Afterward, release-please owns release PRs and tags, and the Release workflow
+publishes through tokenless npm trusted publishing. Manually dispatch that
+workflow at an existing release tag only when retrying a partial publication.
