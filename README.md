@@ -94,5 +94,9 @@ dependency order, skipping versions already present in the registry.
 or newer, npm account 2FA, and an authenticated interactive npm session.
 
 Afterward, release-please owns release PRs and tags, and the Release workflow
-publishes through tokenless npm trusted publishing. Manually dispatch that
-workflow at an existing release tag only when retrying a partial publication.
+publishes through tokenless npm trusted publishing. To retry a partial
+publication, dispatch the workflow from `main` with the existing release tag:
+
+```sh
+gh workflow run release.yml --ref main -f tag=v0.1.1
+```
