@@ -98,7 +98,7 @@ importers:
   packages/adapter-acp:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^1.2.1
+        specifier: 1.2.1
         version: 1.2.1(zod@4.4.3)
       '@vibecook/chopsticks-core':
         specifier: workspace:*
@@ -114,7 +114,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@vibecook/spaghetti-sdk':
-        specifier: ^0.5.16
+        specifier: 0.5.16
         version: 0.5.16(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
       '@vibecook/chopsticks-testing':

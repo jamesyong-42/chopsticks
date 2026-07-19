@@ -188,6 +188,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
           resume: request.resume,
           title: request.title,
           host: options.host,
+          agentOptions: request.agentOptions,
         });
       } catch (err) {
         await workspace.destroy().catch(report);

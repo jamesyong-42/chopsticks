@@ -28,6 +28,8 @@ export interface PrepareClaudeSessionOptions {
   token: string;
   executable?: string;
   permissionMode?: string;
+  /** Model alias or full model id passed to Claude Code's `--model`. */
+  model?: string;
   /**
    * Resume an existing session by its id instead of starting fresh. Probed
    * (HOOK-SURFACE-FINDINGS §6): `--resume <id>` continues the SAME session and
@@ -70,6 +72,7 @@ export async function prepareClaudeSession(options: PrepareClaudeSessionOptions)
   // with both (the hook bridge attaches to resumed sessions too — probed §6).
   const args = options.resume ? ['--resume', sessionId] : ['--session-id', sessionId];
   if (options.title !== undefined) args.push('--name', options.title);
+  if (options.model !== undefined) args.push('--model', options.model);
   args.push('--settings', settingsPath, '--permission-mode', options.permissionMode ?? 'default');
 
   return {

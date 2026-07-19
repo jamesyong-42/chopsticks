@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "component": "chopsticks",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        { "type": "json", "path": "packages/core/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/record/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/workspaces/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/adapter-acp/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/adapter-claude/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/adapter-codex/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/adapter-grok/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/runtime/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/testing/package.json", "jsonpath": "$.version" },
+        { "type": "generic", "path": "packages/core/src/index.ts" },
+        { "type": "generic", "path": "packages/adapter-codex/src/driver.ts" },
+        { "type": "generic", "path": "packages/adapter-codex/src/observer.ts" }
+      ]
+    }
+  }
+}

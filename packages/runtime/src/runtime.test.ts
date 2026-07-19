@@ -237,4 +237,26 @@ describe('createAgentRuntime', () => {
 
     await runtime.dispose();
   });
+
+  it('passes provider-owned launch options through without interpreting them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-options-'));
+    let received: unknown;
+    const provider: AgentProvider = {
+      kind: 'one',
+      async createSession(options) {
+        received = options.agentOptions;
+        return fakeProvider('one', new Map()).createSession(options);
+      },
+    };
+    const runtime = createAgentRuntime({ host, defaultCwd: root, providers: [provider] });
+
+    const result = await runtime.createSession({
+      agent: 'one',
+      agentOptions: { futureProviderFlag: true },
+    });
+
+    expect('error' in result).toBe(false);
+    expect(received).toEqual({ futureProviderFlag: true });
+    await runtime.dispose();
+  });
 });

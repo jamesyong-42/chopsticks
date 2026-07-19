@@ -1,15 +1,24 @@
 {
   "name": "chopsticks",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Native TUI coding-agent runtime: host agents' original terminal experiences with managed lifecycle, observation, and guarded control",
   "license": "MIT",
   "author": "James Yong",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/chopsticks.git"
+  },
+  "homepage": "https://github.com/jamesyong-42/chopsticks#readme",
+  "bugs": {
+    "url": "https://github.com/jamesyong-42/chopsticks/issues"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm typecheck && pnpm -r test",
+    "pack:check": "pnpm build && pnpm -r --filter './packages/**' pack --dry-run",
     "format:check": "prettier --check 'packages/*/src/**/*.{ts,tsx}'",
     "format": "prettier --write 'packages/*/src/**/*.{ts,tsx}'"
   },

@@ -75,13 +75,20 @@ describe('prepareClaudeSession', () => {
   });
 
   it('builds a native-interactive command and NEVER structured print flags', async () => {
-    const p = await prepare({ executable: '/opt/claude', title: 'my session', permissionMode: 'plan' });
+    const p = await prepare({
+      executable: '/opt/claude',
+      title: 'my session',
+      model: 'claude-fable-5',
+      permissionMode: 'plan',
+    });
     expect(p.command).toBe('/opt/claude');
     expect(p.args).toEqual([
       '--session-id',
       p.sessionId,
       '--name',
       'my session',
+      '--model',
+      'claude-fable-5',
       '--settings',
       p.settingsPath,
       '--permission-mode',

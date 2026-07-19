@@ -1,7 +1,7 @@
 import { createClaudeSession } from '@vibecook/chopsticks-adapter-claude';
 import { createCodexTuiSession } from '@vibecook/chopsticks-adapter-codex';
 import { createGrokBackend, type GrokBackend } from '@vibecook/chopsticks-adapter-grok';
-import type { AgentProvider, BuiltinAgentKind } from './types.js';
+import type { AgentProvider, BuiltinAgentKind, ClaudeAgentOptions, CodexAgentOptions } from './types.js';
 
 export interface BuiltinProviderOptions {
   executables?: Partial<Record<BuiltinAgentKind, string>>;
@@ -23,22 +23,35 @@ export function createBuiltinProviders(options: BuiltinProviderOptions = {}): Ag
   return [
     {
       kind: 'claude',
-      createSession: ({ cwd, resume, title, host }) =>
-        createClaudeSession({
+      createSession: ({ cwd, resume, title, host, agentOptions }) => {
+        const launch = agentOptions as ClaudeAgentOptions | undefined;
+        return createClaudeSession({
           cwd,
           resume,
           title,
           executable: resolved.claude,
+          permissionMode: launch?.permissionMode,
+          model: launch?.model,
           ports: {
             spawn: (prepared) => host.spawnTerminal(prepared),
             automate: host.automateTerminal,
           },
-        }),
+        });
+      },
     },
     {
       kind: 'codex',
-      createSession: ({ cwd, resume, host }) =>
-        createCodexTuiSession({ cwd, resume, executable: resolved.codex, host }),
+      createSession: ({ cwd, resume, host, agentOptions }) => {
+        const launch = agentOptions as CodexAgentOptions | undefined;
+        return createCodexTuiSession({
+          cwd,
+          resume,
+          executable: resolved.codex,
+          host,
+          sandbox: launch?.sandbox,
+          approvalPolicy: launch?.approvalPolicy,
+        });
+      },
     },
     {
       kind: 'grok',

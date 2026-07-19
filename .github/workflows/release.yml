@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # Bootstrap 0.1.0 by dispatching this workflow at an existing v0.1.0 tag.
+  # Subsequent releases are created automatically by release-please.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release-please:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: release-please
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Require a version-matching release tag
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG=$(git describe --tags --exact-match HEAD)
+          if [ "${TAG}" != "v${VERSION}" ]; then
+            echo "Expected tag v${VERSION} at HEAD, found ${TAG}"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile --filter './packages/**'
+      - run: pnpm -r --filter './packages/**' typecheck
+      - run: pnpm -r --filter './packages/**' test
+      - run: pnpm -r --filter './packages/**' build
+
+      - name: Publish lockstep package train
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          for PACKAGE_DIR in \
+            packages/core \
+            packages/record \
+            packages/workspaces \
+            packages/adapter-acp \
+            packages/adapter-claude \
+            packages/adapter-codex \
+            packages/testing \
+            packages/adapter-grok \
+            packages/runtime
+          do
+            NAME=$(node -p "require('./${PACKAGE_DIR}/package.json').name")
+            if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${NAME}@${VERSION} already published; skipping"
+            else
+              pnpm --dir "${PACKAGE_DIR}" publish --access public --no-git-checks
+            fi
+          done

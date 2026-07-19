@@ -32,7 +32,7 @@ import {
 import { AppServerClient, spawnAppServerTransport, type Transport } from './app-server-client.js';
 import { CodexNotificationNormalizer } from './normalizer.js';
 
-const CLIENT_INFO = { name: 'chopsticks', version: '0.0.0' } as const;
+const CLIENT_INFO = { name: 'chopsticks', version: '0.1.0' } as const; // x-release-please-version
 
 export type CodexApprovalDecision = 'approved' | 'denied';
 

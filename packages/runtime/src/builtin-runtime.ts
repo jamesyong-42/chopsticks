@@ -1,4 +1,4 @@
-import type { AgentRuntime } from './types.js';
+import type { BuiltinAgentRuntime } from './types.js';
 import { createBuiltinProviders, type BuiltinProviderOptions } from './providers.js';
 import { createAgentRuntime } from './runtime.js';
 import type { AgentRuntimeOptions } from './types.js';
@@ -8,7 +8,7 @@ export interface BuiltinAgentRuntimeOptions extends Omit<AgentRuntimeOptions, 'p
 }
 
 /** Turn-key runtime containing every built-in provider behind one interface. */
-export function createBuiltinAgentRuntime(options: BuiltinAgentRuntimeOptions): AgentRuntime {
+export function createBuiltinAgentRuntime(options: BuiltinAgentRuntimeOptions): BuiltinAgentRuntime {
   return createAgentRuntime({
     ...options,
     providers: createBuiltinProviders({ executables: options.executables }),

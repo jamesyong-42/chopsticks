@@ -1,16 +1,23 @@
 {
   "name": "@vibecook/chopsticks-workspaces",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Workspace modes for chopsticks sessions: direct, exclusive, git-worktree, and copy providers with final metadata.",
   "license": "MIT",
   "author": "James Yong",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/chopsticks.git",
+    "directory": "packages/workspaces"
+  },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
   "publishConfig": {
+    "access": "public",
+    "provenance": true,
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
@@ -24,8 +31,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

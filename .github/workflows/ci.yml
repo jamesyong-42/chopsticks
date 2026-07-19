@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The publishable library graph is intentionally independent of the
+      # private workbench's local Ghosttea development links.
+      - run: pnpm install --frozen-lockfile --filter './packages/**'
+
+      - run: pnpm format:check
+      - run: pnpm -r --filter './packages/**' typecheck
+      - run: pnpm -r --filter './packages/**' test
+      - run: pnpm -r --filter './packages/**' build
+      - run: pnpm -r --filter './packages/**' pack --dry-run

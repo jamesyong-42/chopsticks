@@ -53,6 +53,8 @@ export interface CreateClaudeSessionOptions {
   title?: string;
   executable?: string;
   permissionMode?: string;
+  /** Model alias or full model id passed through to Claude Code. */
+  model?: string;
   /**
    * Resume an existing session by id (native `--resume`; the session keeps its
    * transcript and id — HOOK-SURFACE-FINDINGS §6). Omit to start fresh.
@@ -91,6 +93,7 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
     title: options.title,
     executable: options.executable,
     permissionMode: options.permissionMode,
+    model: options.model,
     endpoint: bridge.endpoint(),
     tokenEnvVar: TOKEN_ENV_VAR,
     token: bridge.token,
