@@ -11,7 +11,7 @@ never by scraping terminal text.
 ## Packages
 
 - `@vibecook/chopsticks-runtime` — unified runtime and built-in Claude, Codex,
-  and Grok providers.
+  ACP, and Grok providers.
 - `@vibecook/chopsticks-core` — zero-I/O event, state, session, and host
   contracts.
 - `@vibecook/chopsticks-workspaces` — direct, exclusive, worktree, and copy
@@ -28,7 +28,7 @@ terminal service.
 ## Install
 
 ```sh
-pnpm add @vibecook/chopsticks-runtime@0.1.0
+pnpm add @vibecook/chopsticks-runtime@0.1.2
 ```
 
 Node.js 22 or newer is required.
@@ -38,6 +38,8 @@ Node.js 22 or newer is required.
 The selected agent discriminates the available launch options:
 
 ```ts
+const onApproval = async () => 'denied' as const;
+
 await runtime.createSession({
   agent: 'claude',
   workspace: { mode: 'worktree', path: process.cwd() },
@@ -50,16 +52,29 @@ await runtime.createSession({
 await runtime.createSession({
   agent: 'codex',
   agentOptions: {
+    model: 'gpt-5.6-sol',
     sandbox: 'read-only',
     approvalPolicy: 'never',
+    onApproval,
+  },
+});
+
+await runtime.createSession({
+  agent: 'grok',
+  agentOptions: {
+    model: 'grok-code-fast',
+    permissionMode: 'plan',
+    sandbox: 'workspace-write',
+    onApproval,
   },
 });
 ```
 
-Codex safety options apply when creating a fresh thread. Resumed threads retain
-their existing configuration. Structured approval routing is intentionally not
-part of these launch options; it requires a reattachable session-control
-contract so daemon restarts do not lose callback closures.
+Generic ACP sessions accept `clientCapabilities`, `onApproval`, and either a
+per-session `connector` or the runtime's default `acpConnector`. Codex model and
+safety options apply when creating a fresh thread; resumed threads retain their
+existing configuration. Approval callbacks are process-lifetime policy seams;
+when absent, structured adapters deny approval requests by default.
 
 ## Development
 

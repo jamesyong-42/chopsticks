@@ -41,6 +41,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@vibecook/chopsticks-adapter-acp": "workspace:*",
     "@vibecook/chopsticks-adapter-claude": "workspace:*",
     "@vibecook/chopsticks-adapter-codex": "workspace:*",
     "@vibecook/chopsticks-adapter-grok": "workspace:*",

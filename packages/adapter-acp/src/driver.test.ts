@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { AgentEventEnvelope } from '@vibecook/chopsticks-core';
+import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import type { Agent, Client, ClientCapabilities, RequestPermissionResponse } from '@agentclientprotocol/sdk';
+import type { AcpConnector } from './connection.js';
 import { createAcpSession } from './driver.js';
 import { scriptedAcpConnector } from './scripted-connector.js';
 
@@ -106,6 +109,73 @@ describe('createAcpSession', () => {
       expect(completed!.sequence).toBeLessThan(answer!.sequence);
       expect(JSON.stringify(started?.event)).not.toContain('private thought text');
       expect(session.state().activeReasoning).toBeUndefined();
+    } finally {
+      off();
+      await session.dispose();
+    }
+  });
+
+  it('forwards client capabilities and structured approvals to the ACP seam', async () => {
+    const clientCapabilities: ClientCapabilities = {
+      fs: { readTextFile: true, writeTextFile: false },
+      terminal: true,
+    };
+    let initializedCapabilities: ClientCapabilities | undefined;
+    let permissionResponse: RequestPermissionResponse | undefined;
+    let client!: Client;
+    const connector: AcpConnector = (toClient) => {
+      const agent = {
+        async initialize(params: { clientCapabilities?: ClientCapabilities }) {
+          initializedCapabilities = params.clientCapabilities;
+          return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} };
+        },
+        async newSession() {
+          return { sessionId: SID };
+        },
+        async prompt() {
+          permissionResponse = await client.requestPermission({
+            sessionId: SID,
+            toolCall: {
+              toolCallId: 'tool-1',
+              title: 'Write file',
+              kind: 'edit',
+              rawInput: { path: 'README.md' },
+            },
+            options: [
+              { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+              { optionId: 'deny', name: 'Reject once', kind: 'reject_once' },
+            ],
+          });
+          return { stopReason: 'end_turn' as const };
+        },
+        async cancel() {},
+      };
+      client = toClient(agent as unknown as Agent);
+      return {
+        agent: agent as unknown as Agent,
+        onClose() {},
+        close() {},
+      };
+    };
+    const onApproval = vi.fn(() => 'approved' as const);
+    const session = await createAcpSession({ cwd: '/x', connector, clientCapabilities, onApproval });
+    const events: string[] = [];
+    const off = session.onEvent((envelope) => events.push(envelope.event.type));
+
+    try {
+      await driveTurn(session, 'write the file');
+      expect(initializedCapabilities).toEqual(clientCapabilities);
+      expect(onApproval).toHaveBeenCalledWith({
+        toolCallId: 'tool-1',
+        tool: 'Write file',
+        input: { path: 'README.md' },
+        options: [
+          { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'deny', name: 'Reject once', kind: 'reject_once' },
+        ],
+      });
+      expect(permissionResponse).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+      expect(events).toEqual(expect.arrayContaining(['permission.requested', 'permission.resolved']));
     } finally {
       off();
       await session.dispose();

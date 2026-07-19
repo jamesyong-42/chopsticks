@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialSessionState, type AgentEventEnvelope, type AgentSession } from '@vibecook/chopsticks-core';
-import { createPendingControlSession } from './backend.js';
+import { buildGrokTuiArgs, createPendingControlSession } from './backend.js';
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -108,5 +108,39 @@ describe('createPendingControlSession', () => {
     await tick();
     await session.dispose();
     expect(control.disposed).toBe(true);
+  });
+});
+
+describe('buildGrokTuiArgs', () => {
+  it('forwards model and safety posture to a fresh native TUI session', () => {
+    expect(
+      buildGrokTuiArgs('/tmp/grok.sock', 'session-1', {
+        model: 'grok-code-fast',
+        permissionMode: 'plan',
+        sandbox: 'workspace-write',
+      }),
+    ).toEqual([
+      '--model',
+      'grok-code-fast',
+      '--permission-mode',
+      'plan',
+      '--sandbox',
+      'workspace-write',
+      '--leader',
+      '--leader-socket',
+      '/tmp/grok.sock',
+      '--session-id',
+      'session-1',
+    ]);
+  });
+
+  it('preserves the resume recipe when launch options are absent', () => {
+    expect(buildGrokTuiArgs('/tmp/grok.sock', 'session-1', { resume: 'session-1' })).toEqual([
+      '--leader',
+      '--leader-socket',
+      '/tmp/grok.sock',
+      '--resume',
+      'session-1',
+    ]);
   });
 });

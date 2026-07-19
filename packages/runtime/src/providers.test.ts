@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInitialSessionState, type AgentHost, type AgentSession } from '@vibecook/chopsticks-core';
+import type { AcpConnector } from '@vibecook/chopsticks-adapter-acp';
 
 const adapters = vi.hoisted(() => ({
+  createAcpSession: vi.fn(),
   createClaudeSession: vi.fn(),
   createCodexTuiSession: vi.fn(),
   createGrokBackend: vi.fn(),
+}));
+
+vi.mock('@vibecook/chopsticks-adapter-acp', () => ({
+  createAcpSession: adapters.createAcpSession,
 }));
 
 vi.mock('@vibecook/chopsticks-adapter-claude', () => ({
@@ -48,6 +54,7 @@ function fakeSession(kind: string): AgentSession {
 describe('createBuiltinProviders launch options', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    adapters.createAcpSession.mockResolvedValue(fakeSession('acp'));
     adapters.createClaudeSession.mockResolvedValue(fakeSession('claude'));
     adapters.createCodexTuiSession.mockResolvedValue(fakeSession('codex'));
     adapters.createGrokBackend.mockReturnValue({ createSession: vi.fn(), dispose: vi.fn() });
@@ -81,10 +88,11 @@ describe('createBuiltinProviders launch options', () => {
       (provider) => provider.kind === 'codex',
     )!;
 
+    const onApproval = vi.fn(() => 'approved' as const);
     await codex.createSession({
       cwd: '/work/repo',
       host,
-      agentOptions: { sandbox: 'read-only', approvalPolicy: 'never' },
+      agentOptions: { model: 'gpt-5.6-sol', sandbox: 'read-only', approvalPolicy: 'never', onApproval },
     });
 
     expect(adapters.createCodexTuiSession).toHaveBeenCalledWith({
@@ -92,8 +100,63 @@ describe('createBuiltinProviders launch options', () => {
       resume: undefined,
       executable: '/opt/codex',
       host,
+      model: 'gpt-5.6-sol',
       sandbox: 'read-only',
       approvalPolicy: 'never',
+      onApproval,
+    });
+  });
+
+  it('forwards generic ACP capabilities and approvals through a configured connector', async () => {
+    const connector = vi.fn() as unknown as AcpConnector;
+    const onApproval = vi.fn(() => 'approved' as const);
+    const clientCapabilities = { terminal: true };
+    const acp = createBuiltinProviders({ acpConnector: connector }).find((provider) => provider.kind === 'acp')!;
+
+    await acp.createSession({
+      cwd: '/work/repo',
+      resume: 'session-1',
+      host,
+      agentOptions: { clientCapabilities, onApproval },
+    });
+
+    expect(adapters.createAcpSession).toHaveBeenCalledWith({
+      cwd: '/work/repo',
+      resume: 'session-1',
+      connector,
+      clientCapabilities,
+      onApproval,
+    });
+  });
+
+  it('forwards Grok model, safety posture, capabilities, and approvals', async () => {
+    const onApproval = vi.fn(() => 'denied' as const);
+    const clientCapabilities = { terminal: true };
+    const providers = createBuiltinProviders({ executables: { grok: '/opt/grok' } });
+    const grok = providers.find((provider) => provider.kind === 'grok')!;
+
+    await grok.createSession({
+      cwd: '/work/repo',
+      host,
+      agentOptions: {
+        model: 'grok-code-fast',
+        permissionMode: 'plan',
+        sandbox: 'workspace-write',
+        clientCapabilities,
+        onApproval,
+      },
+    });
+
+    expect(adapters.createGrokBackend).toHaveBeenCalledWith({ executable: '/opt/grok', host });
+    const backend = adapters.createGrokBackend.mock.results[0]!.value;
+    expect(backend.createSession).toHaveBeenCalledWith({
+      cwd: '/work/repo',
+      resume: undefined,
+      model: 'grok-code-fast',
+      permissionMode: 'plan',
+      sandbox: 'workspace-write',
+      clientCapabilities,
+      onApproval,
     });
   });
 });
@@ -110,3 +173,16 @@ const mismatchedRequest: BuiltinCreateAgentSessionOptions = {
   agentOptions: { sandbox: 'read-only' },
 };
 void mismatchedRequest;
+
+const typedConnector = vi.fn() as unknown as AcpConnector;
+const typedAcpRequest: BuiltinCreateAgentSessionOptions = {
+  agent: 'acp',
+  agentOptions: { connector: typedConnector, clientCapabilities: { terminal: true }, onApproval: () => 'approved' },
+};
+void typedAcpRequest;
+
+const typedGrokRequest: BuiltinCreateAgentSessionOptions = {
+  agent: 'grok',
+  agentOptions: { model: 'grok-code-fast', permissionMode: 'plan', sandbox: 'workspace-write' },
+};
+void typedGrokRequest;

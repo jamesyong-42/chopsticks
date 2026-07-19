@@ -31,6 +31,7 @@ import {
   type SessionRuntimeState,
 } from '@vibecook/chopsticks-core';
 import { AppServerClient, type Transport } from './app-server-client.js';
+import type { CodexApprovalDecision, CodexApprovalRequest } from './driver.js';
 import { CodexNotificationNormalizer } from './normalizer.js';
 
 const CLIENT_INFO = { name: 'chopsticks-observer', version: '0.1.2' } as const; // x-release-please-version
@@ -44,6 +45,8 @@ const rec = (v: unknown): Record<string, unknown> | undefined =>
 
 export interface CreateCodexObserverOptions {
   transport: Transport;
+  /** Decide structured approval requests. Default: deny. */
+  onApproval?: (req: CodexApprovalRequest) => CodexApprovalDecision | Promise<CodexApprovalDecision>;
   /** Choose which thread to attach to when several appear. Default: the first. */
   selectThread?: (threadId: string) => boolean;
   /**
@@ -58,6 +61,7 @@ export interface CreateCodexObserverOptions {
    */
   start?: {
     cwd: string;
+    model?: string;
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     approvalPolicy?: 'never' | 'on-request' | 'untrusted';
   };
@@ -175,6 +179,22 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
     for (const event of norm.events) apply(event, 'native-hook', { method, params });
   });
 
+  client.onServerRequest(async (method, params, id) => {
+    const requestId = String(id);
+    apply(
+      { type: 'permission.requested', requestId, tool: method, input: params, presentation: 'host-ui' },
+      'native-hook',
+      { method, params, id },
+    );
+    const decision = opts.onApproval ? await opts.onApproval({ method, params, requestId: id }) : 'denied';
+    apply(
+      { type: 'permission.resolved', requestId, outcome: decision === 'approved' ? 'allowed' : 'denied' },
+      'native-hook',
+      { method, params, id },
+    );
+    return { decision };
+  });
+
   client.onClose(() => {
     disposed = true; // let any in-flight attach retry loop exit
     if (attached) apply({ type: 'process.exited', reason: 'signal' }, 'runtime');
@@ -189,6 +209,7 @@ export async function createCodexObserver(opts: CreateCodexObserverOptions): Pro
   if (opts.start) {
     const startResult = await client.request('thread/start', {
       cwd: opts.start.cwd,
+      model: opts.start.model,
       sandbox: opts.start.sandbox ?? 'workspace-write',
       approvalPolicy: opts.start.approvalPolicy ?? 'on-request',
     });

@@ -48,6 +48,8 @@ export interface CreateCodexSessionOptions {
   /** Transport override (tests). Defaults to spawning `codex app-server`. */
   transport?: Transport;
   executable?: string;
+  /** Model id applied when starting a fresh thread. */
+  model?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   approvalPolicy?: 'never' | 'on-request' | 'untrusted';
   /** Resume an existing thread by id (`thread/resume`) instead of starting fresh. */
@@ -159,6 +161,7 @@ export async function createCodexSession(options: CreateCodexSessionOptions): Pr
     ? await client.request('thread/resume', { threadId: options.resume })
     : await client.request('thread/start', {
         cwd: options.cwd,
+        model: options.model,
         sandbox: options.sandbox ?? 'workspace-write',
         approvalPolicy: options.approvalPolicy ?? 'on-request',
       });

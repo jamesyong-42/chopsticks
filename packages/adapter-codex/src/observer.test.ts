@@ -14,10 +14,13 @@ function controllable(resumeFailuresBeforeSuccess: number) {
   let resumeFails = resumeFailuresBeforeSuccess;
   let resumeAttempts = 0;
   const calls: { method?: string; params?: unknown }[] = [];
+  const sent: Record<string, unknown>[] = [];
   const transport: Transport = {
     send: (m) => {
       const msg = m as { id?: number; method?: string; params?: unknown };
+      sent.push(msg as Record<string, unknown>);
       if (msg.id === undefined) return; // client notification (e.g. initialized)
+      if (msg.method === undefined) return; // response to a server request
       calls.push({ method: msg.method, params: msg.params });
       queueMicrotask(() => {
         if (msg.method === 'thread/resume') {
@@ -55,6 +58,7 @@ function controllable(resumeFailuresBeforeSuccess: number) {
     fireClose: () => onCls?.({ code: null, signal: null }),
     resumeAttempts: () => resumeAttempts,
     calls: () => calls,
+    sent: () => sent,
   };
 }
 
@@ -98,7 +102,7 @@ describe('createCodexObserver controller-owned bootstrap', () => {
     const t = controllable(0);
     const obs = await createCodexObserver({
       transport: t.transport,
-      start: { cwd: '/tmp/ws', sandbox: 'read-only', approvalPolicy: 'never' },
+      start: { cwd: '/tmp/ws', model: 'gpt-5.6-sol', sandbox: 'read-only', approvalPolicy: 'never' },
     });
 
     // Bootstrap completes before createCodexObserver resolves — ready immediately,
@@ -121,10 +125,43 @@ describe('createCodexObserver controller-owned bootstrap', () => {
     const start = t.calls().find((c) => c.method === 'thread/start');
     expect(start?.params).toMatchObject({
       cwd: '/tmp/ws',
+      model: 'gpt-5.6-sol',
       sandbox: 'read-only',
       approvalPolicy: 'never',
     });
 
+    await obs.dispose();
+  });
+
+  it('routes controller-owned approval requests through the supplied policy', async () => {
+    const t = controllable(0);
+    const onApproval = vi.fn(() => 'approved' as const);
+    const obs = await createCodexObserver({
+      transport: t.transport,
+      start: { cwd: '/tmp/ws' },
+      onApproval,
+    });
+    const events: string[] = [];
+    obs.onEvent((envelope) => events.push(envelope.event.type));
+
+    t.deliver({
+      jsonrpc: '2.0',
+      id: 999,
+      method: 'execCommandApproval',
+      params: { command: 'git status' },
+    });
+
+    await vi.waitFor(() => {
+      expect(t.sent().find((message) => message.id === 999 && 'result' in message)?.result).toEqual({
+        decision: 'approved',
+      });
+    });
+    expect(onApproval).toHaveBeenCalledWith({
+      method: 'execCommandApproval',
+      params: { command: 'git status' },
+      requestId: 999,
+    });
+    expect(events).toEqual(expect.arrayContaining(['permission.requested', 'permission.resolved']));
     await obs.dispose();
   });
 

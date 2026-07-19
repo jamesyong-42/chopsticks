@@ -5,12 +5,13 @@ import type { AgentRuntimeOptions } from './types.js';
 
 export interface BuiltinAgentRuntimeOptions extends Omit<AgentRuntimeOptions, 'providers'> {
   executables?: BuiltinProviderOptions['executables'];
+  acpConnector?: BuiltinProviderOptions['acpConnector'];
 }
 
 /** Turn-key runtime containing every built-in provider behind one interface. */
 export function createBuiltinAgentRuntime(options: BuiltinAgentRuntimeOptions): BuiltinAgentRuntime {
   return createAgentRuntime({
     ...options,
-    providers: createBuiltinProviders({ executables: options.executables }),
+    providers: createBuiltinProviders({ executables: options.executables, acpConnector: options.acpConnector }),
   });
 }

@@ -29,6 +29,7 @@ import type {
   SessionRuntimeState,
 } from '@vibecook/chopsticks-core';
 import { createCodexObserver } from './observer.js';
+import type { CodexApprovalDecision, CodexApprovalRequest } from './driver.js';
 import { spawnAppServer } from './ws-transport.js';
 import { wsOverUnixTransport } from './ws-transport.js';
 
@@ -37,8 +38,12 @@ export interface CreateCodexTuiSessionOptions extends AgentTuiSessionOptions {
   executable?: string;
   /** Choose which thread to attach to when several appear (passive observer only). */
   selectThread?: (threadId: string) => boolean;
+  /** Model id applied when starting a fresh thread. */
+  model?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   approvalPolicy?: 'never' | 'on-request' | 'untrusted';
+  /** Decide structured approval requests from the controller-owned app-server connection. Default: deny. */
+  onApproval?: (req: CodexApprovalRequest) => CodexApprovalDecision | Promise<CodexApprovalDecision>;
 }
 
 /** A Codex native-TUI session — {@link AgentSession} plus the rollout path. */
@@ -66,11 +71,13 @@ export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions):
     observer = await createCodexObserver({
       transport: wsOverUnixTransport(server.socketPath),
       selectThread: opts.selectThread,
+      onApproval: opts.onApproval,
       ...(opts.resume
         ? { threadId: opts.resume }
         : {
             start: {
               cwd: opts.cwd,
+              model: opts.model,
               sandbox: opts.sandbox,
               approvalPolicy: opts.approvalPolicy,
             },

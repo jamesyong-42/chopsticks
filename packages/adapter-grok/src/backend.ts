@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAcpSession, createStdioAcpConnector } from '@vibecook/chopsticks-adapter-acp';
+import type { CreateAcpSessionOptions } from '@vibecook/chopsticks-adapter-acp';
 import {
   createInitialSessionState,
   type AgentEventEnvelope,
@@ -34,9 +35,39 @@ export interface CreateGrokBackendOptions {
 
 export interface GrokBackend {
   /** Start a Grok tab: native TUI + a control client attached to the same session. */
-  createSession(opts: { cwd: string; resume?: string }): Promise<AgentSession>;
+  createSession(opts: CreateGrokSessionOptions): Promise<AgentSession>;
   /** Tear down the shared leader (host shutdown). */
   dispose(): void;
+}
+
+export interface CreateGrokSessionOptions {
+  cwd: string;
+  resume?: string;
+  /** Model id passed to the native Grok TUI. */
+  model?: string;
+  /** Grok permission mode. Kept open because the CLI's modes evolve. */
+  permissionMode?: string;
+  /** Grok sandbox profile passed to the native TUI. */
+  sandbox?: string;
+  /** ACP capabilities advertised by the structured control client. */
+  clientCapabilities?: CreateAcpSessionOptions['clientCapabilities'];
+  /** Decide ACP permission requests. Default: deny. */
+  onApproval?: CreateAcpSessionOptions['onApproval'];
+}
+
+/** Build the native TUI invocation for a new or resumed leader-owned session. */
+export function buildGrokTuiArgs(
+  socketPath: string,
+  sessionId: string,
+  opts: Pick<CreateGrokSessionOptions, 'resume' | 'model' | 'permissionMode' | 'sandbox'>,
+): string[] {
+  const args: string[] = [];
+  if (opts.model !== undefined) args.push('--model', opts.model);
+  if (opts.permissionMode !== undefined) args.push('--permission-mode', opts.permissionMode);
+  if (opts.sandbox !== undefined) args.push('--sandbox', opts.sandbox);
+  args.push('--leader', '--leader-socket', socketPath);
+  args.push(opts.resume ? '--resume' : '--session-id', sessionId);
+  return args;
 }
 
 /** Attach ACP control to an existing Grok leader session, retrying while the TUI registers it. */
@@ -45,6 +76,7 @@ async function attachControl(
   cwd: string,
   socketPath: string,
   sessionId: string,
+  opts: Pick<CreateGrokSessionOptions, 'clientCapabilities' | 'onApproval'>,
 ): Promise<AgentSession> {
   const args = ['agent', '--leader', '--leader-socket', socketPath, 'stdio'];
   let lastErr: unknown;
@@ -54,6 +86,8 @@ async function attachControl(
         cwd,
         connector: createStdioAcpConnector({ executable, args, cwd }),
         resume: sessionId,
+        clientCapabilities: opts.clientCapabilities,
+        onApproval: opts.onApproval,
       });
     } catch (err) {
       lastErr = err;
@@ -148,16 +182,15 @@ export function createGrokBackend(options: CreateGrokBackendOptions): GrokBacken
   }
 
   return {
-    async createSession({ cwd, resume }): Promise<AgentSession> {
+    async createSession(opts): Promise<AgentSession> {
+      const { cwd, resume } = opts;
       const socketPath = await ensureLeader();
       const sessionId = resume ?? randomUUID();
-      const tuiArgs = resume
-        ? ['--leader', '--leader-socket', socketPath, '--resume', sessionId]
-        : ['--leader', '--leader-socket', socketPath, '--session-id', sessionId];
+      const tuiArgs = buildGrokTuiArgs(socketPath, sessionId, opts);
       const { runtimeSessionId } = await host.spawnTerminal({ command: executable, args: tuiArgs, cwd });
 
       return createPendingControlSession(sessionId, runtimeSessionId, () =>
-        attachControl(executable, cwd, socketPath, sessionId),
+        attachControl(executable, cwd, socketPath, sessionId, opts),
       );
     },
 

@@ -123,13 +123,16 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 describe('createCodexSession', () => {
   it('establishes identity and structured observation from thread/start', async () => {
     const s = scriptedAppServer();
-    const session = await createCodexSession({ cwd: '/x', transport: s.transport });
+    const session = await createCodexSession({ cwd: '/x', transport: s.transport, model: 'gpt-5.6-sol' });
     expect(session.sessionId).toBe(THREAD);
     expect(session.runtimeSessionId).toBe(THREAD);
     expect(session.threadPath()).toBe(ROLLOUT);
     expect(session.observationLevel()).toBe('structured');
     await flush();
     expect(session.state().lifecycle).toBe('ready'); // thread/started -> session.started
+    expect(s.sent.find((message) => message.method === 'thread/start')?.params).toMatchObject({
+      model: 'gpt-5.6-sol',
+    });
   });
 
   it('submitPrompt drives a turn and reduces to a coherent state', async () => {

@@ -14,10 +14,14 @@ import type {
   WorkspaceMode,
   WorkspaceSessionMetadata,
 } from '@vibecook/chopsticks-workspaces';
+import type { CreateAcpSessionOptions } from '@vibecook/chopsticks-adapter-acp';
+import type { CreateCodexTuiSessionOptions } from '@vibecook/chopsticks-adapter-codex';
+import type { CreateGrokSessionOptions } from '@vibecook/chopsticks-adapter-grok';
 import type { AgentConversationSnapshot } from './conversation.js';
 
 /** Built-in provider ids. Applications select one; implementation stays here. */
-export type BuiltinAgentKind = 'claude' | 'codex' | 'grok';
+export type BuiltinAgentKind = 'claude' | 'codex' | 'acp' | 'grok';
+export type BuiltinExecutableAgentKind = Exclude<BuiltinAgentKind, 'acp'>;
 
 export interface ClaudeAgentOptions {
   /** Claude Code permission mode. Kept open because the CLI's modes evolve. */
@@ -26,12 +30,17 @@ export interface ClaudeAgentOptions {
   model?: string;
 }
 
-export interface CodexAgentOptions {
-  /** Applied to fresh threads; resumed threads retain their existing configuration. */
-  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  /** Applied to fresh threads; resumed threads retain their existing configuration. */
-  approvalPolicy?: 'never' | 'on-request' | 'untrusted';
-}
+export type CodexAgentOptions = Pick<
+  CreateCodexTuiSessionOptions,
+  'model' | 'sandbox' | 'approvalPolicy' | 'onApproval'
+>;
+
+export type AcpAgentOptions = Omit<CreateAcpSessionOptions, 'cwd' | 'resume' | 'connector'> & {
+  /** Per-session connector override; otherwise the runtime's configured ACP connector is used. */
+  connector?: CreateAcpSessionOptions['connector'];
+};
+
+export type GrokAgentOptions = Omit<CreateGrokSessionOptions, 'cwd' | 'resume'>;
 
 /** A provider is the only adapter-specific seam the unified runtime consumes. */
 export interface AgentProvider {
@@ -82,7 +91,8 @@ type BuiltinCreateBase = Omit<CreateAgentSessionOptions, 'agent' | 'agentOptions
 export type BuiltinCreateAgentSessionOptions =
   | (BuiltinCreateBase & { agent: 'claude'; agentOptions?: ClaudeAgentOptions })
   | (BuiltinCreateBase & { agent: 'codex'; agentOptions?: CodexAgentOptions })
-  | (BuiltinCreateBase & { agent: 'grok'; agentOptions?: never });
+  | (BuiltinCreateBase & { agent: 'acp'; agentOptions?: AcpAgentOptions })
+  | (BuiltinCreateBase & { agent: 'grok'; agentOptions?: GrokAgentOptions });
 
 export interface AgentSessionInfo {
   agent: string;

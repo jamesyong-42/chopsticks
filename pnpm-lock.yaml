@@ -150,6 +150,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@vibecook/chopsticks-adapter-acp':
+        specifier: workspace:*
+        version: link:../adapter-acp
       '@vibecook/chopsticks-adapter-claude':
         specifier: workspace:*
         version: link:../adapter-claude
