@@ -11,4 +11,4 @@ export * from './state.js';
 export * from './session.js';
 export * from './host.js';
 
-export const CHOPSTICKS_CORE_VERSION = '0.1.0'; // x-release-please-version
+export const CHOPSTICKS_CORE_VERSION = '0.1.1'; // x-release-please-version

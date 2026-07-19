@@ -33,7 +33,7 @@ import {
 import { AppServerClient, type Transport } from './app-server-client.js';
 import { CodexNotificationNormalizer } from './normalizer.js';
 
-const CLIENT_INFO = { name: 'chopsticks-observer', version: '0.1.0' } as const; // x-release-please-version
+const CLIENT_INFO = { name: 'chopsticks-observer', version: '0.1.1' } as const; // x-release-please-version
 
 /** Empty inject materializes a rollout without a model turn (probe 3). */
 const MATERIALIZE_ITEMS = [{ type: 'text', text: '' }] as const;
