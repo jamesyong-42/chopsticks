@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-record",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Own-action record: the append-only JSONL log of what the chopsticks runtime itself did (injections, workspace finals, exits, policy conflicts).",
   "license": "MIT",

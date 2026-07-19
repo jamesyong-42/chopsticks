@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/jamesyong-42/chopsticks/compare/v0.1.2...v0.1.3) (2026-07-19)
+
+
+### Features
+
+* complete unified agent launch options ([438d0a2](https://github.com/jamesyong-42/chopsticks/commit/438d0a2013400349f2b695b24651a839e7f498bb))
+
 ## [0.1.2](https://github.com/jamesyong-42/chopsticks/compare/v0.1.1...v0.1.2) (2026-07-19)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "chopsticks",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Native TUI coding-agent runtime: host agents' original terminal experiences with managed lifecycle, observation, and guarded control",
