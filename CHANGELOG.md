@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/jamesyong-42/chopsticks/compare/v0.1.3...v0.1.4) (2026-07-21)
+
+
+### Features
+
+* add caller-owned terminal adoption ([a3aff40](https://github.com/jamesyong-42/chopsticks/commit/a3aff40cc18a9fe7e617fced1356399eddbb2b38))
+
 ## [0.1.3](https://github.com/jamesyong-42/chopsticks/compare/v0.1.2...v0.1.3) (2026-07-19)
 
 

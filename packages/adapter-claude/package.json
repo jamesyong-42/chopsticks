@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/chopsticks-adapter-claude",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Claude Code native adapter: hook registry, loopback hook bridge, event normalizer, settings generation.",
   "license": "MIT",
