@@ -27,6 +27,7 @@ import type {
   PromptReceipt,
   PromptSubmission,
   SessionRuntimeState,
+  TerminalSpec,
 } from '@vibecook/chopsticks-core';
 import { createCodexObserver } from './observer.js';
 import type { CodexApprovalDecision, CodexApprovalRequest } from './driver.js';
@@ -52,7 +53,15 @@ export interface CodexTuiSession extends AgentSession {
   threadPath(): string | undefined;
 }
 
-export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions): Promise<CodexTuiSession> {
+export interface PreparedCodexTuiSession {
+  readonly sessionId: string;
+  readonly launch: TerminalSpec;
+  adopt(runtimeSessionId: string): Promise<CodexTuiSession>;
+  dispose(): Promise<void>;
+}
+
+/** Prepare the private app-server, owned thread, and native TUI recipe without spawning the TUI. */
+export async function prepareCodexTuiSession(opts: CreateCodexTuiSessionOptions): Promise<PreparedCodexTuiSession> {
   const executable = opts.executable ?? 'codex';
   const host: AgentHost = opts.host;
 
@@ -66,7 +75,7 @@ export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions):
 
   // Observer first: own or resume the thread so sessionId + ready state exist
   // before the TUI process is even spawned.
-  let observer;
+  let observer: Awaited<ReturnType<typeof createCodexObserver>>;
   try {
     observer = await createCodexObserver({
       transport: wsOverUnixTransport(server.socketPath),
@@ -100,38 +109,59 @@ export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions):
   const remoteAddr = `unix://${server.socketPath}`;
   const args = ['resume', threadId, '--remote', remoteAddr];
 
-  let runtimeSessionId: string;
-  try {
-    ({ runtimeSessionId } = await host.spawnTerminal({ command: executable, args, cwd: opts.cwd }));
-  } catch (err) {
+  const launch: TerminalSpec = { command: executable, args, cwd: opts.cwd };
+  let adoptedRuntimeSessionId: string | undefined;
+  let adoptedSession: CodexTuiSession | undefined;
+  let disposed = false;
+  async function dispose(): Promise<void> {
+    if (disposed) return;
+    disposed = true;
     await observer.dispose().catch(() => undefined);
     server.dispose();
-    throw err;
   }
 
-  let disposed = false;
   return {
-    get sessionId(): string {
-      return observer.sessionId ?? threadId;
+    sessionId: observer.sessionId ?? threadId,
+    launch,
+    async adopt(runtimeSessionId): Promise<CodexTuiSession> {
+      if (disposed) throw new Error('prepared Codex session is disposed');
+      if (adoptedRuntimeSessionId && adoptedRuntimeSessionId !== runtimeSessionId) {
+        throw new Error(`prepared Codex session is already adopted by ${adoptedRuntimeSessionId}`);
+      }
+      if (adoptedSession) return adoptedSession;
+      adoptedRuntimeSessionId = runtimeSessionId;
+      adoptedSession = {
+        get sessionId(): string {
+          return observer.sessionId ?? threadId;
+        },
+        runtimeSessionId,
+        state: (): SessionRuntimeState => observer.state(),
+        observationLevel: () => observer.observationLevel(),
+        threadPath: () => observer.threadPath(),
+        onEvent: (listener: (e: AgentEventEnvelope) => void) => observer.onEvent(listener),
+        async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
+          const result = await host.automateTerminal(runtimeSessionId, {
+            kind: 'paste',
+            text: submission.text,
+            submit: submission.mode !== 'paste-only',
+          });
+          return result.accepted ? { status: 'confirmed' } : { status: 'rejected', reason: result.reason };
+        },
+        dispose,
+      };
+      return adoptedSession;
     },
-    runtimeSessionId,
-    state: (): SessionRuntimeState => observer.state(),
-    observationLevel: () => observer.observationLevel(),
-    threadPath: () => observer.threadPath(),
-    onEvent: (listener: (e: AgentEventEnvelope) => void) => observer.onEvent(listener),
-    async submitPrompt(submission: PromptSubmission): Promise<PromptReceipt> {
-      const result = await host.automateTerminal(runtimeSessionId, {
-        kind: 'paste',
-        text: submission.text,
-        submit: submission.mode !== 'paste-only',
-      });
-      return result.accepted ? { status: 'confirmed' } : { status: 'rejected', reason: result.reason };
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      await observer.dispose().catch(() => undefined);
-      server.dispose();
-    },
+    dispose,
   };
+}
+
+export async function createCodexTuiSession(opts: CreateCodexTuiSessionOptions): Promise<CodexTuiSession> {
+  const prepared = await prepareCodexTuiSession(opts);
+  try {
+    const { runtimeSessionId } = await opts.host.spawnTerminal(prepared.launch);
+    return await prepared.adopt(runtimeSessionId);
+  } catch (err) {
+    await prepared.dispose();
+    throw err;
+  }
 }

@@ -5,7 +5,9 @@ import type { AcpConnector } from '@vibecook/chopsticks-adapter-acp';
 const adapters = vi.hoisted(() => ({
   createAcpSession: vi.fn(),
   createClaudeSession: vi.fn(),
+  prepareClaudeTuiSession: vi.fn(),
   createCodexTuiSession: vi.fn(),
+  prepareCodexTuiSession: vi.fn(),
   createGrokBackend: vi.fn(),
 }));
 
@@ -15,10 +17,12 @@ vi.mock('@vibecook/chopsticks-adapter-acp', () => ({
 
 vi.mock('@vibecook/chopsticks-adapter-claude', () => ({
   createClaudeSession: adapters.createClaudeSession,
+  prepareClaudeTuiSession: adapters.prepareClaudeTuiSession,
 }));
 
 vi.mock('@vibecook/chopsticks-adapter-codex', () => ({
   createCodexTuiSession: adapters.createCodexTuiSession,
+  prepareCodexTuiSession: adapters.prepareCodexTuiSession,
 }));
 
 vi.mock('@vibecook/chopsticks-adapter-grok', () => ({
@@ -26,7 +30,7 @@ vi.mock('@vibecook/chopsticks-adapter-grok', () => ({
 }));
 
 import { createBuiltinProviders } from './providers.js';
-import type { BuiltinCreateAgentSessionOptions } from './types.js';
+import type { BuiltinAgentRuntime, BuiltinCreateAgentSessionOptions } from './types.js';
 
 const host: AgentHost = {
   async spawnTerminal() {
@@ -51,13 +55,35 @@ function fakeSession(kind: string): AgentSession {
   };
 }
 
+function fakePreparation(kind: string) {
+  return {
+    sessionId: `${kind}-session`,
+    launch: {
+      command: `/opt/${kind}`,
+      args: ['--prepared'],
+      cwd: '/work/repo',
+      env: { SECRET: 'value' },
+      settingsPath: '/private/internal',
+      filesToCleanup: ['/private/internal'],
+    },
+    adopt: vi.fn(async (runtimeSessionId: string) => ({ ...fakeSession(kind), runtimeSessionId })),
+    dispose: vi.fn(),
+  };
+}
+
 describe('createBuiltinProviders launch options', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     adapters.createAcpSession.mockResolvedValue(fakeSession('acp'));
     adapters.createClaudeSession.mockResolvedValue(fakeSession('claude'));
+    adapters.prepareClaudeTuiSession.mockResolvedValue(fakePreparation('claude'));
     adapters.createCodexTuiSession.mockResolvedValue(fakeSession('codex'));
-    adapters.createGrokBackend.mockReturnValue({ createSession: vi.fn(), dispose: vi.fn() });
+    adapters.prepareCodexTuiSession.mockResolvedValue(fakePreparation('codex'));
+    adapters.createGrokBackend.mockReturnValue({
+      createSession: vi.fn(),
+      prepareSession: vi.fn(async () => fakePreparation('grok')),
+      dispose: vi.fn(),
+    });
   });
 
   it('forwards Claude model and permission mode to the native driver', async () => {
@@ -159,6 +185,55 @@ describe('createBuiltinProviders launch options', () => {
       onApproval,
     });
   });
+
+  it('exposes prepare/adopt for native providers while generic ACP stays explicitly unsupported', async () => {
+    const providers = createBuiltinProviders({
+      executables: { claude: '/opt/claude', codex: '/opt/codex', grok: '/opt/grok' },
+    });
+    const claude = providers.find((provider) => provider.kind === 'claude')!;
+    const codex = providers.find((provider) => provider.kind === 'codex')!;
+    const acp = providers.find((provider) => provider.kind === 'acp')!;
+    const grok = providers.find((provider) => provider.kind === 'grok')!;
+
+    const claudePrepared = await claude.prepareSession!({
+      cwd: '/work/repo',
+      title: 'review',
+      host,
+      agentOptions: { model: 'sonnet', permissionMode: 'plan' },
+    });
+    expect(adapters.prepareClaudeTuiSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/work/repo',
+        title: 'review',
+        executable: '/opt/claude',
+        model: 'sonnet',
+        permissionMode: 'plan',
+      }),
+    );
+    expect(claudePrepared.launch).toEqual({
+      command: '/opt/claude',
+      args: ['--prepared'],
+      cwd: '/work/repo',
+      env: { SECRET: 'value' },
+    });
+
+    await codex.prepareSession!({ cwd: '/work/repo', host, agentOptions: { sandbox: 'read-only' } });
+    expect(adapters.prepareCodexTuiSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/work/repo', executable: '/opt/codex', sandbox: 'read-only', host }),
+    );
+
+    const onApproval = vi.fn(() => 'approved' as const);
+    await grok.prepareSession!({
+      cwd: '/work/repo',
+      host,
+      agentOptions: { permissionMode: 'plan', onApproval },
+    });
+    const backend = adapters.createGrokBackend.mock.results[0]!.value;
+    expect(backend.prepareSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/work/repo', permissionMode: 'plan', onApproval }),
+    );
+    expect(acp.prepareSession).toBeUndefined();
+  });
 });
 
 const typedClaudeRequest: BuiltinCreateAgentSessionOptions = {
@@ -186,3 +261,17 @@ const typedGrokRequest: BuiltinCreateAgentSessionOptions = {
   agentOptions: { model: 'grok-code-fast', permissionMode: 'plan', sandbox: 'workspace-write' },
 };
 void typedGrokRequest;
+
+type BuiltinPrepareRequest = Parameters<BuiltinAgentRuntime['prepareSession']>[0];
+const typedCodexPreparation: BuiltinPrepareRequest = {
+  agent: 'codex',
+  agentOptions: { model: 'gpt-5.6-sol', sandbox: 'read-only', onApproval: () => 'denied' },
+};
+void typedCodexPreparation;
+
+const mismatchedPreparation: BuiltinPrepareRequest = {
+  agent: 'grok',
+  // @ts-expect-error a Codex approvalPolicy is not a Grok launch option
+  agentOptions: { approvalPolicy: 'never' },
+};
+void mismatchedPreparation;

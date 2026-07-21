@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createInitialSessionState,
   type AgentEventEnvelope,
@@ -24,6 +25,10 @@ const host: AgentHost = {
 };
 
 const execFileAsync = promisify(execFile);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 async function makeRepo(): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-repo-'));
@@ -62,6 +67,69 @@ function fakeProvider(
           return { status: 'confirmed', turnId: `${kind}-turn` };
         },
         async dispose() {},
+      };
+    },
+  };
+}
+
+function preparableProvider(
+  kind: string,
+  hooks: {
+    prepareCount: number;
+    adoptCount: number;
+    disposeCount: number;
+    preparedCwd?: string;
+    adoptionGate?: Promise<void>;
+  },
+): AgentProvider {
+  const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void }>();
+  const managed = fakeProvider(kind, handles);
+  return {
+    ...managed,
+    async prepareSession(options) {
+      hooks.prepareCount += 1;
+      hooks.preparedCwd = options.cwd;
+      const sessionId = `${kind}-prepared-${hooks.prepareCount}`;
+      let disposed = false;
+      let adopted: AgentSession | undefined;
+      return {
+        sessionId,
+        launch: {
+          command: `/opt/${kind}`,
+          args: ['--session-id', sessionId],
+          cwd: options.cwd,
+          env: { PREPARED_TOKEN: 'secret' },
+        },
+        async adopt(runtimeSessionId) {
+          hooks.adoptCount += 1;
+          await hooks.adoptionGate;
+          if (adopted) return adopted;
+          const listeners = new Set<(event: AgentEventEnvelope) => void>();
+          adopted = {
+            sessionId,
+            runtimeSessionId,
+            state: createInitialSessionState,
+            observationLevel: () => 'structured',
+            onEvent(listener) {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
+            async submitPrompt() {
+              return { status: 'confirmed', turnId: `${kind}-turn` };
+            },
+            async dispose() {
+              if (disposed) return;
+              disposed = true;
+              hooks.disposeCount += 1;
+            },
+          };
+          return adopted;
+        },
+        async dispose() {
+          if (disposed) return;
+          disposed = true;
+          hooks.disposeCount += 1;
+        },
       };
     },
   };
@@ -257,6 +325,138 @@ describe('createAgentRuntime', () => {
 
     expect('error' in result).toBe(false);
     expect(received).toEqual({ futureProviderFlag: true });
+    await runtime.dispose();
+  });
+
+  it('prepares without spawning, binds before exec, and adopts the same pane idempotently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-prepare-'));
+    const hooks = { prepareCount: 0, adoptCount: 0, disposeCount: 0 };
+    const runtime = createAgentRuntime({
+      host,
+      defaultCwd: root,
+      providers: [preparableProvider('one', hooks)],
+    });
+
+    const prepared = await runtime.prepareSession({ agent: 'one' });
+    expect('error' in prepared).toBe(false);
+    if ('error' in prepared) throw new Error('unexpected prepare failure');
+    expect(prepared).toMatchObject({
+      agent: 'one',
+      sessionId: 'one-prepared-1',
+      launch: {
+        command: '/opt/one',
+        args: ['--session-id', 'one-prepared-1'],
+        cwd: prepared.workspace.root,
+        env: { PREPARED_TOKEN: 'secret' },
+      },
+    });
+    expect(runtime.sessionInfo('existing-pane')).toBeUndefined();
+
+    const first = await runtime.adoptPrepared(prepared.preparationId, {
+      runtimeSessionId: 'existing-pane',
+      processId: 4242,
+    });
+    expect(first).toMatchObject({
+      agent: 'one',
+      sessionId: prepared.sessionId,
+      runtimeSessionId: 'existing-pane',
+      preparationId: prepared.preparationId,
+      processId: 4242,
+    });
+    expect(await runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'existing-pane' })).toEqual(first);
+    expect(await runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'other-pane' })).toMatchObject({
+      error: { code: 'PREPARATION_ALREADY_ADOPTED' },
+    });
+    expect(hooks.adoptCount).toBe(1);
+    expect(await runtime.submitPrompt('existing-pane', { text: 'hello' })).toMatchObject({ status: 'confirmed' });
+
+    await runtime.handleProcessExit('existing-pane', { exitCode: 0, signal: null, reason: 'completed' });
+    expect(runtime.sessionInfo('existing-pane')).toBeUndefined();
+    expect(hooks.disposeCount).toBe(1);
+    await runtime.dispose();
+  });
+
+  it('reports unsupported providers and terminal conflicts without consuming the preparation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-unsupported-'));
+    const handles = new Map<string, { emit: (event: AgentEventEnvelope) => void }>();
+    const hooks = { prepareCount: 0, adoptCount: 0, disposeCount: 0 };
+    const runtime = createAgentRuntime({
+      host,
+      defaultCwd: root,
+      providers: [fakeProvider('plain', handles), preparableProvider('prepared', hooks)],
+    });
+
+    expect(await runtime.prepareSession({ agent: 'plain' })).toMatchObject({
+      error: { code: 'PREPARATION_UNSUPPORTED' },
+    });
+    const existing = await runtime.createSession({ agent: 'plain' });
+    if ('error' in existing) throw new Error('unexpected create failure');
+    const prepared = await runtime.prepareSession({ agent: 'prepared' });
+    if ('error' in prepared) throw new Error('unexpected prepare failure');
+    expect(
+      await runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: existing.runtimeSessionId }),
+    ).toMatchObject({ error: { code: 'RUNTIME_SESSION_CONFLICT' } });
+    expect(hooks.adoptCount).toBe(0);
+    expect(await runtime.cancelPrepared(prepared.preparationId)).toEqual({ cancelled: true });
+    await runtime.dispose();
+  });
+
+  it('expires unused preparations, cleans their copy workspace, and returns a typed error', async () => {
+    vi.useFakeTimers();
+    const root = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-expiry-'));
+    await writeFile(join(root, 'file.txt'), 'source');
+    const workspacesRoot = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-expiry-copies-'));
+    const hooks = { prepareCount: 0, adoptCount: 0, disposeCount: 0 };
+    const runtime = createAgentRuntime({
+      host,
+      defaultCwd: root,
+      preparationTtlMs: 25,
+      providers: [preparableProvider('one', hooks)],
+    });
+
+    const prepared = await runtime.prepareSession({
+      agent: 'one',
+      workspace: { mode: 'copy', workspacesRoot },
+    });
+    if ('error' in prepared) throw new Error('unexpected prepare failure');
+    const preparedRoot = prepared.workspace.root;
+    expect(existsSync(preparedRoot)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(await runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'late-pane' })).toMatchObject({
+      error: { code: 'PREPARATION_EXPIRED' },
+    });
+    expect(existsSync(preparedRoot)).toBe(false);
+    expect(hooks.disposeCount).toBe(1);
+    await runtime.dispose();
+  });
+
+  it('linearizes concurrent adoption and lets the shim cancel after an exec failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chopsticks-runtime-adopt-race-'));
+    let releaseAdoption!: () => void;
+    const adoptionGate = new Promise<void>((resolve) => (releaseAdoption = resolve));
+    const hooks = { prepareCount: 0, adoptCount: 0, disposeCount: 0, adoptionGate };
+    const runtime = createAgentRuntime({
+      host,
+      defaultCwd: root,
+      providers: [preparableProvider('one', hooks)],
+    });
+    const prepared = await runtime.prepareSession({ agent: 'one' });
+    if ('error' in prepared) throw new Error('unexpected prepare failure');
+
+    const first = runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'pane' });
+    const second = runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'pane' });
+    expect(await runtime.adoptPrepared(prepared.preparationId, { runtimeSessionId: 'other-pane' })).toMatchObject({
+      error: { code: 'PREPARATION_ALREADY_ADOPTED' },
+    });
+    releaseAdoption();
+    expect(await second).toEqual(await first);
+    expect(hooks.adoptCount).toBe(1);
+
+    expect(await runtime.cancelPrepared(prepared.preparationId)).toEqual({ cancelled: true });
+    expect(runtime.sessionInfo('pane')).toBeUndefined();
+    expect(await runtime.cancelPrepared(prepared.preparationId)).toEqual({ cancelled: true });
+    expect(hooks.disposeCount).toBe(1);
     await runtime.dispose();
   });
 });

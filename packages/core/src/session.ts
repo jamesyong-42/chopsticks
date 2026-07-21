@@ -40,7 +40,9 @@ export type PromptReceipt =
 /**
  * The handle every driver returns for one live agent process/thread — observed
  * and controlled. Process lifecycle (spawn/terminate) belongs to the host, not
- * this handle (ADR-007); `dispose()` tears down observation/control only.
+ * this handle (ADR-007); `dispose()` tears down observation/control only. For
+ * an adopted process inside a longer-lived shell PTY, the caller reports the
+ * vendor process exit separately while keeping the terminal alive.
  *
  * Adapters MAY extend this with native extras, but applications should normally
  * consume the provider-neutral AgentRuntime surface from chopsticks-runtime.

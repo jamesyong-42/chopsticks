@@ -75,7 +75,26 @@ export interface ClaudeSession extends AgentSession {
   pollTranscript(): Promise<void>;
 }
 
-export async function createClaudeSession(options: CreateClaudeSessionOptions): Promise<ClaudeSession> {
+export interface PrepareClaudeTuiSessionOptions extends Omit<CreateClaudeSessionOptions, 'ports'> {
+  /** Route semantic automation to a terminal after the preparation is adopted. */
+  automate(runtimeSessionId: string, operation: TerminalAutomationOperation): Promise<TerminalAutomationResult>;
+}
+
+/**
+ * A live Claude hook bridge plus an authoritative launch recipe that has not
+ * yet been bound to a host terminal. Call `adopt` before executing `launch` so
+ * the runtime is subscribed before Claude can emit its first hook.
+ */
+export interface PreparedClaudeTuiSession {
+  readonly sessionId: string;
+  readonly launch: PreparedClaudeSession;
+  adopt(runtimeSessionId: string): Promise<ClaudeSession>;
+  dispose(): Promise<void>;
+}
+
+export async function prepareClaudeTuiSession(
+  options: PrepareClaudeTuiSessionOptions,
+): Promise<PreparedClaudeTuiSession> {
   // Session id first: the bridge must be able to enforce its allow-list from
   // the instant it starts listening, with no window where the closure could
   // dereference a not-yet-prepared session. On resume the id is the session
@@ -86,38 +105,50 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
   });
   await bridge.start();
 
-  const prepared = await prepareClaudeSession({
-    cwd: options.cwd,
-    sessionId,
-    resume: options.resume,
-    title: options.title,
-    executable: options.executable,
-    permissionMode: options.permissionMode,
-    model: options.model,
-    endpoint: bridge.endpoint(),
-    tokenEnvVar: TOKEN_ENV_VAR,
-    token: bridge.token,
-  });
-
-  let runtimeSessionId: string;
   try {
-    ({ runtimeSessionId } = await options.ports.spawn(prepared));
+    const prepared = await prepareClaudeSession({
+      cwd: options.cwd,
+      sessionId,
+      resume: options.resume,
+      title: options.title,
+      executable: options.executable,
+      permissionMode: options.permissionMode,
+      model: options.model,
+      endpoint: bridge.endpoint(),
+      tokenEnvVar: TOKEN_ENV_VAR,
+      token: bridge.token,
+    });
+
+    return createPreparedClaudeSession(options, bridge, prepared);
   } catch (err) {
     await bridge.dispose();
-    await cleanupClaudeSession(prepared);
     throw err;
   }
+}
 
+function createPreparedClaudeSession(
+  options: PrepareClaudeTuiSessionOptions,
+  bridge: HookBridge,
+  prepared: PreparedClaudeSession,
+): PreparedClaudeTuiSession {
   const normalizer = new ClaudeHookNormalizer();
   const stamper = createEnvelopeStamper();
   let state = createInitialSessionState();
   let observation: ObservationLevel = 'terminal-only';
   let transcriptPath: string | undefined;
   let observer: TranscriptObserver | undefined;
+  let adoptedRuntimeSessionId: string | undefined;
+  let adoptedSession: ClaudeSession | undefined;
+  let disposed = false;
   const eventListeners = new Set<(e: AgentEventEnvelope) => void>();
 
   const injector: PromptInjector = createPromptInjector({
-    automate: (operation) => options.ports.automate(runtimeSessionId, operation),
+    automate: (operation) => {
+      if (!adoptedRuntimeSessionId) {
+        return Promise.resolve({ accepted: false, reason: 'prepared Claude session is not adopted' });
+      }
+      return options.automate(adoptedRuntimeSessionId, operation);
+    },
   });
 
   function apply(
@@ -204,24 +235,63 @@ export async function createClaudeSession(options: CreateClaudeSessionOptions): 
     void observer?.notifyActivity();
   });
 
+  async function dispose(): Promise<void> {
+    if (disposed) return;
+    disposed = true;
+    observer?.stop();
+    eventListeners.clear();
+    await bridge.dispose();
+    await cleanupClaudeSession(prepared);
+  }
+
   return {
     sessionId: prepared.sessionId,
-    runtimeSessionId,
-    state: () => state,
-    observationLevel: () => observation,
-    transcriptPath: () => transcriptPath,
-    onEvent(listener) {
-      eventListeners.add(listener);
-      return () => eventListeners.delete(listener);
+    launch: prepared,
+    async adopt(runtimeSessionId): Promise<ClaudeSession> {
+      if (disposed) throw new Error('prepared Claude session is disposed');
+      if (adoptedRuntimeSessionId && adoptedRuntimeSessionId !== runtimeSessionId) {
+        throw new Error(`prepared Claude session is already adopted by ${adoptedRuntimeSessionId}`);
+      }
+      if (adoptedSession) return adoptedSession;
+      adoptedRuntimeSessionId = runtimeSessionId;
+      adoptedSession = {
+        sessionId: prepared.sessionId,
+        runtimeSessionId,
+        state: () => state,
+        observationLevel: () => observation,
+        transcriptPath: () => transcriptPath,
+        onEvent(listener) {
+          eventListeners.add(listener);
+          return () => eventListeners.delete(listener);
+        },
+        submitPrompt: (submission) => injector.submit(submission),
+        pollTranscript: async () => {
+          await observer?.notifyActivity();
+        },
+        dispose,
+      };
+      return adoptedSession;
     },
-    submitPrompt: (submission) => injector.submit(submission),
-    pollTranscript: async () => {
-      await observer?.notifyActivity();
-    },
-    async dispose() {
-      observer?.stop();
-      await bridge.dispose();
-      await cleanupClaudeSession(prepared);
-    },
+    dispose,
   };
+}
+
+export async function createClaudeSession(options: CreateClaudeSessionOptions): Promise<ClaudeSession> {
+  const prepared = await prepareClaudeTuiSession({
+    cwd: options.cwd,
+    title: options.title,
+    executable: options.executable,
+    permissionMode: options.permissionMode,
+    model: options.model,
+    resume: options.resume,
+    transcriptPollIntervalMs: options.transcriptPollIntervalMs,
+    automate: options.ports.automate,
+  });
+  try {
+    const { runtimeSessionId } = await options.ports.spawn(prepared.launch);
+    return await prepared.adopt(runtimeSessionId);
+  } catch (err) {
+    await prepared.dispose();
+    throw err;
+  }
 }

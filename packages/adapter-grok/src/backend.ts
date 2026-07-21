@@ -24,6 +24,7 @@ import {
   type PromptReceipt,
   type PromptSubmission,
   type SessionRuntimeState,
+  type TerminalSpec,
 } from '@vibecook/chopsticks-core';
 
 export interface CreateGrokBackendOptions {
@@ -36,6 +37,8 @@ export interface CreateGrokBackendOptions {
 export interface GrokBackend {
   /** Start a Grok tab: native TUI + a control client attached to the same session. */
   createSession(opts: CreateGrokSessionOptions): Promise<AgentSession>;
+  /** Prepare leader wiring and a native launch recipe without spawning the TUI. */
+  prepareSession(opts: CreateGrokSessionOptions): Promise<PreparedGrokSession>;
   /** Tear down the shared leader (host shutdown). */
   dispose(): void;
 }
@@ -53,6 +56,44 @@ export interface CreateGrokSessionOptions {
   clientCapabilities?: CreateAcpSessionOptions['clientCapabilities'];
   /** Decide ACP permission requests. Default: deny. */
   onApproval?: CreateAcpSessionOptions['onApproval'];
+}
+
+export interface PreparedGrokSession {
+  readonly sessionId: string;
+  readonly launch: TerminalSpec;
+  adopt(runtimeSessionId: string): Promise<AgentSession>;
+  dispose(): Promise<void>;
+}
+
+/** Bind a prepared Grok recipe to exactly one caller-owned terminal. */
+export function createPreparedGrokSession(
+  sessionId: string,
+  launch: TerminalSpec,
+  attach: () => Promise<AgentSession>,
+): PreparedGrokSession {
+  let adoptedRuntimeSessionId: string | undefined;
+  let adoptedSession: AgentSession | undefined;
+  let disposed = false;
+
+  return {
+    sessionId,
+    launch,
+    async adopt(runtimeSessionId): Promise<AgentSession> {
+      if (disposed) throw new Error('prepared Grok session is disposed');
+      if (adoptedRuntimeSessionId && adoptedRuntimeSessionId !== runtimeSessionId) {
+        throw new Error(`prepared Grok session is already adopted by ${adoptedRuntimeSessionId}`);
+      }
+      if (adoptedSession) return adoptedSession;
+      adoptedRuntimeSessionId = runtimeSessionId;
+      adoptedSession = createPendingControlSession(sessionId, runtimeSessionId, attach);
+      return adoptedSession;
+    },
+    async dispose(): Promise<void> {
+      if (disposed) return;
+      disposed = true;
+      await adoptedSession?.dispose().catch(() => undefined);
+    },
+  };
 }
 
 /** Build the native TUI invocation for a new or resumed leader-owned session. */
@@ -181,17 +222,32 @@ export function createGrokBackend(options: CreateGrokBackendOptions): GrokBacken
     return socketPath;
   }
 
-  return {
-    async createSession(opts): Promise<AgentSession> {
-      const { cwd, resume } = opts;
-      const socketPath = await ensureLeader();
-      const sessionId = resume ?? randomUUID();
-      const tuiArgs = buildGrokTuiArgs(socketPath, sessionId, opts);
-      const { runtimeSessionId } = await host.spawnTerminal({ command: executable, args: tuiArgs, cwd });
+  async function prepareSession(opts: CreateGrokSessionOptions): Promise<PreparedGrokSession> {
+    const { cwd, resume } = opts;
+    const socketPath = await ensureLeader();
+    const sessionId = resume ?? randomUUID();
+    const launch: TerminalSpec = {
+      command: executable,
+      args: buildGrokTuiArgs(socketPath, sessionId, opts),
+      cwd,
+    };
+    return createPreparedGrokSession(sessionId, launch, () =>
+      attachControl(executable, cwd, socketPath, sessionId, opts),
+    );
+  }
 
-      return createPendingControlSession(sessionId, runtimeSessionId, () =>
-        attachControl(executable, cwd, socketPath, sessionId, opts),
-      );
+  return {
+    prepareSession,
+
+    async createSession(opts): Promise<AgentSession> {
+      const prepared = await prepareSession(opts);
+      try {
+        const { runtimeSessionId } = await host.spawnTerminal(prepared.launch);
+        return await prepared.adopt(runtimeSessionId);
+      } catch (err) {
+        await prepared.dispose();
+        throw err;
+      }
     },
 
     dispose(): void {

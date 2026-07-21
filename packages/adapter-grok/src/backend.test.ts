@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialSessionState, type AgentEventEnvelope, type AgentSession } from '@vibecook/chopsticks-core';
-import { buildGrokTuiArgs, createPendingControlSession } from './backend.js';
+import { buildGrokTuiArgs, createPendingControlSession, createPreparedGrokSession } from './backend.js';
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -142,5 +142,27 @@ describe('buildGrokTuiArgs', () => {
       '--resume',
       'session-1',
     ]);
+  });
+});
+
+describe('Grok TUI preparation', () => {
+  it('binds the leader recipe to one existing terminal and attaches control once', async () => {
+    const control = fakeControl();
+    const attach = async () => control.session;
+    const prepared = createPreparedGrokSession(
+      'grok-session',
+      { command: '/opt/grok', args: ['--leader'], cwd: '/work/repo' },
+      attach,
+    );
+
+    expect(prepared.launch).toEqual({ command: '/opt/grok', args: ['--leader'], cwd: '/work/repo' });
+    const first = await prepared.adopt('existing-pane');
+    expect(first.runtimeSessionId).toBe('existing-pane');
+    expect(await prepared.adopt('existing-pane')).toBe(first);
+    await expect(prepared.adopt('other-pane')).rejects.toThrow('already adopted');
+
+    await tick();
+    await prepared.dispose();
+    expect(control.disposed).toBe(true);
   });
 });

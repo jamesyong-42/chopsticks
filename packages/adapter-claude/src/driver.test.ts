@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentEventEnvelope, TerminalAutomationOperation } from '@vibecook/chopsticks-core';
-import { createClaudeSession, type ClaudeSession } from './driver.js';
+import { createClaudeSession, prepareClaudeTuiSession, type ClaudeSession } from './driver.js';
 import type { PreparedClaudeSession } from './prepare.js';
 
 let sessions: ClaudeSession[] = [];
@@ -68,6 +68,58 @@ async function startSession() {
 }
 
 describe('createClaudeSession (full loop, test-as-Claude)', () => {
+  it('prepares launch wiring without spawning and adopts one existing terminal idempotently', async () => {
+    const prepared = await prepareClaudeTuiSession({
+      cwd: '/tmp',
+      executable: '/opt/claude',
+      permissionMode: 'plan',
+      model: 'sonnet',
+      automate: async () => ({ accepted: true }),
+    });
+
+    expect(prepared.launch).toMatchObject({
+      command: '/opt/claude',
+      cwd: '/tmp',
+      env: { CHOPSTICKS_HOOK_TOKEN: expect.any(String) },
+    });
+    expect(prepared.launch.args).toEqual(
+      expect.arrayContaining(['--session-id', prepared.sessionId, '--model', 'sonnet', '--permission-mode', 'plan']),
+    );
+    expect(existsSync(prepared.launch.settingsPath)).toBe(true);
+
+    const first = await prepared.adopt('existing-pane');
+    expect(first.runtimeSessionId).toBe('existing-pane');
+    expect(await prepared.adopt('existing-pane')).toBe(first);
+    await expect(prepared.adopt('other-pane')).rejects.toThrow('already adopted');
+
+    const events: AgentEventEnvelope[] = [];
+    first.onEvent((event) => events.push(event));
+    const settings = JSON.parse(readFileSync(prepared.launch.settingsPath, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ url?: string }> }>>;
+    };
+    const endpoint = settings.hooks.UserPromptSubmit[0].hooks[0].url!;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${prepared.launch.env.CHOPSTICKS_HOOK_TOKEN}`,
+      },
+      body: JSON.stringify({
+        session_id: prepared.sessionId,
+        cwd: '/tmp',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'typed prompt',
+        prompt_id: 'p-adopted',
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(first.observationLevel()).toBe('native-hooks');
+    expect(events.some((event) => event.event.type === 'turn.started')).toBe(true);
+
+    await prepared.dispose();
+    expect(existsSync(prepared.launch.settingsPath)).toBe(false);
+  });
+
   it('spawns via the prepared join contract and tracks the hook lifecycle in reducer state', async () => {
     const { session, prepared, hook } = await startSession();
     expect(prepared.sessionId).toBe(session.sessionId);
